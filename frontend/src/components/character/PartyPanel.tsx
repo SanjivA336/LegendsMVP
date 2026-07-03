@@ -5,8 +5,8 @@ import HPBar from '../ui/HPBar'
 import CharacterDossier from './CharacterDossier'
 import PartySlotModal from './PartySlotModal'
 import type { Character } from '../../types/character'
-import { PLAYER_COLORS } from '../../constants/colors'
 import { useAdventure } from '../../hooks/useAdventure'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 import { fetchActorSlots, type Actor, type ActorSlot, fetchActors } from '../../api/actors'
 
 const MAX_PARTY = 4
@@ -101,6 +101,7 @@ export default function PartyPanel({ characters }: PartyPanelProps) {
 
   const adventure = useAdventure()
   const adventureId = adventure?.id ?? null
+  const playerColors = usePlayerColors()
 
   const { data: actorSlots = [] } = useQuery<ActorSlot[]>({
     queryKey: ['actor-slots', adventureId],
@@ -120,7 +121,7 @@ export default function PartyPanel({ characters }: PartyPanelProps) {
   const players = characters.filter((c) => c.is_player)
 
   function slotColor(index: number): string {
-    return PLAYER_COLORS[index % PLAYER_COLORS.length]
+    return playerColors[index % playerColors.length]
   }
 
   function openDossier(char: Character) {
@@ -213,7 +214,7 @@ export default function PartyPanel({ characters }: PartyPanelProps) {
         accentColor={
           selectedChar
             ? slotColor(players.indexOf(selectedChar))
-            : PLAYER_COLORS[0]
+            : playerColors[0]
         }
       />
 

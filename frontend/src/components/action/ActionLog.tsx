@@ -1,8 +1,11 @@
 import { useEffect, useRef } from 'react'
 import ActionEntry from './ActionEntry'
+import CheckEmbed from './CheckEmbed'
 import type { ActionRecord } from '../../types/combat'
 import type { Character } from '../../types/character'
-import { PLAYER_COLORS, NPC_HOSTILE, NARRATOR_COLOR } from '../../constants/colors'
+import type { PendingCheck } from '../../types/round'
+import { NPC_HOSTILE, NPC_NEUTRAL, NARRATOR_COLOR } from '../../constants/colors'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 
 interface ActionLogProps {
   actions: ActionRecord[]
@@ -10,25 +13,33 @@ interface ActionLogProps {
   playerCharacterId: string | null
   isLoading?: boolean
   pendingPlayerText?: string | null
+  pendingPassed?: boolean
   dmThinking?: boolean
+  pendingChecks?: PendingCheck[]
 }
 
 function resolveActorColor(
   actorId: string,
+  displayName: string | null,
   characters: Character[],
-  playerCharacterId: string | null
+  playerCharacterId: string | null,
+  playerColors: string[]
 ): { name: string; color: string } {
   if (actorId === 'narrator') return { name: 'Narrator', color: NARRATOR_COLOR }
 
+  // Ephemeral NPC (no persistent Character record) -- speaks/acts via a display_name
+  // carried directly on the ActionRecord instead of a party lookup.
+  if (actorId.startsWith('npc:')) return { name: displayName ?? 'Someone', color: NPC_NEUTRAL }
+
   const char = characters.find((c) => c.id === actorId)
-  if (!char) return { name: actorId, color: NARRATOR_COLOR }
+  if (!char) return { name: displayName ?? actorId, color: NARRATOR_COLOR }
 
   if (char.is_player) {
     const players = characters.filter((c) => c.is_player)
     const idx = players.indexOf(char)
     const color = idx === 0 && char.id === playerCharacterId
-      ? PLAYER_COLORS[0]
-      : PLAYER_COLORS[idx % PLAYER_COLORS.length]
+      ? playerColors[0]
+      : playerColors[idx % playerColors.length]
     return { name: char.name, color }
   }
 
@@ -65,12 +76,16 @@ export default function ActionLog({
   playerCharacterId,
   isLoading,
   pendingPlayerText,
+  pendingPassed,
   dmThinking,
+  pendingChecks = [],
 }: ActionLogProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const prevCount = useRef(0)
+  const playerColors = usePlayerColors()
 
-  const totalEntries = actions.length + (pendingPlayerText ? 1 : 0) + (dmThinking ? 1 : 0)
+  const hasPending = !!pendingPlayerText || !!pendingPassed
+  const totalEntries = actions.length + (hasPending ? 1 : 0) + (dmThinking ? 1 : 0) + pendingChecks.length
   useEffect(() => {
     if (totalEntries > prevCount.current) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -78,7 +93,7 @@ export default function ActionLog({
     prevCount.current = totalEntries
   }, [totalEntries])
 
-  const hasContent = actions.length > 0 || pendingPlayerText || dmThinking
+  const hasContent = actions.length > 0 || hasPending || dmThinking || pendingChecks.length > 0
 
   return (
     <>
@@ -100,7 +115,9 @@ export default function ActionLog({
           </div>
         )}
         {actions.map((action) => {
-          const { name, color } = resolveActorColor(action.actor_id, characters, playerCharacterId)
+          const { name, color } = resolveActorColor(
+            action.actor_id, action.display_name, characters, playerCharacterId, playerColors
+          )
           return (
             <ActionEntry
               key={action.id}
@@ -109,29 +126,36 @@ export default function ActionLog({
               narrative={action.narrative}
               actionType={action.action_type}
               outcome={action.outcome}
+              speech={action.speech}
+              actionText={action.action_text}
             />
           )
         })}
 
-        {/* Pending player message — shown immediately on submit */}
-        {pendingPlayerText && (() => {
+        {/* Pending player message — shown immediately on submit or pass */}
+        {hasPending && (() => {
           const playerChar = playerCharacterId
             ? characters.find((c) => c.id === playerCharacterId)
             : null
           const players = characters.filter((c) => c.is_player)
           const idx = playerChar ? players.indexOf(playerChar) : 0
-          const color = PLAYER_COLORS[idx % PLAYER_COLORS.length]
+          const color = playerColors[idx % playerColors.length]
           const name = playerChar?.name ?? 'You'
           return (
             <ActionEntry
               actorName={name}
               actorColor={color}
-              narrative={pendingPlayerText}
+              narrative={pendingPassed ? '(passed)' : pendingPlayerText ?? ''}
               actionType="narrative"
               outcome=""
             />
           )
         })()}
+
+        {/* Pending skill checks — visible to everyone, interactive only for your own */}
+        {pendingChecks.map((check) => (
+          <CheckEmbed key={check.id} check={check} isMine={check.character_id === playerCharacterId} />
+        ))}
 
         {/* DM thinking animation */}
         {dmThinking && <DmThinkingBubble />}

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { getArena, listActions } from '../api/combat'
+import { getArena, listActions, getEncounter } from '../api/combat'
 
 export function useArena(encounterId: string | null) {
   return useQuery({
@@ -10,10 +10,23 @@ export function useArena(encounterId: string | null) {
   })
 }
 
+export function useEncounter(encounterId: string | null) {
+  return useQuery({
+    queryKey: ['encounter', encounterId],
+    queryFn: () => getEncounter(encounterId!),
+    enabled: !!encounterId,
+  })
+}
+
 export function useActionLog(encounterId: string | null) {
   return useQuery({
     queryKey: ['action-log', encounterId],
-    queryFn: () => listActions(encounterId!),
+    queryFn: async () => {
+      const actions = await listActions(encounterId!)
+      return [...actions].sort((a, b) =>
+        a.round_number - b.round_number || a.sequence - b.sequence
+      )
+    },
     enabled: !!encounterId,
   })
 }

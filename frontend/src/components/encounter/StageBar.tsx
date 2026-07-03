@@ -3,7 +3,8 @@ import ColorAvatar from '../ui/ColorAvatar'
 import CastModal from './CastModal'
 import type { Character } from '../../types/character'
 import type { RelationshipEdge } from '../../types/context'
-import { PLAYER_COLORS, NPC_NEUTRAL } from '../../constants/colors'
+import { NPC_NEUTRAL } from '../../constants/colors'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 
 interface StageBarProps {
   stageCharacters: Character[]
@@ -13,6 +14,7 @@ interface StageBarProps {
 
 export default function StageBar({ stageCharacters, relationships, playerCharacterId }: StageBarProps) {
   const [castOpen, setCastOpen] = useState(false)
+  const playerColors = usePlayerColors()
 
   const players = stageCharacters.filter((c) => c.is_player)
 
@@ -20,8 +22,8 @@ export default function StageBar({ stageCharacters, relationships, playerCharact
     if (char.is_player) {
       const idx = players.indexOf(char)
       return char.id === playerCharacterId
-        ? PLAYER_COLORS[0]
-        : PLAYER_COLORS[idx % PLAYER_COLORS.length]
+        ? playerColors[0]
+        : playerColors[idx % playerColors.length]
     }
     return NPC_NEUTRAL
   }

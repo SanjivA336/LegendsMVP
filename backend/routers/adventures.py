@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request, HTTPException
 from pydantic import BaseModel
 from ..firebase import get_db
-from ..models.adventure import Adventure, AdventureCreate
+from ..models.adventure import Adventure, AdventureCreate, AdventureUpdate
 from ..models.member import Member
 from ..utils.auth import get_current_uid, require_member
 
@@ -95,6 +95,24 @@ async def get_adventure(adventure_id: str, request: Request):
         raise HTTPException(404, "Adventure not found")
 
     return Adventure(**doc.to_dict()).model_dump()
+
+
+@router.patch("/adventures/{adventure_id}")
+async def update_adventure(adventure_id: str, payload: AdventureUpdate, request: Request):
+    uid = await get_current_uid(request)
+    await require_member(adventure_id, uid, "admin")
+    db = get_db()
+
+    doc_ref = db.collection("adventures").document(adventure_id)
+    doc = doc_ref.get()
+    if not doc.exists:
+        raise HTTPException(404, "Adventure not found")
+
+    updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+    if updates:
+        doc_ref.update(updates)
+
+    return Adventure(**{**doc.to_dict(), **updates}).model_dump()
 
 
 @router.delete("/adventures/{adventure_id}", status_code=204)

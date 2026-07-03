@@ -9,9 +9,10 @@ interface ArenaGridProps {
   arena: Arena
   characters: Character[]
   playerCharacterId: string | null
+  floorColor?: string
 }
 
-export default function ArenaGrid({ arena, characters, playerCharacterId }: ArenaGridProps) {
+export default function ArenaGrid({ arena, characters, playerCharacterId, floorColor }: ArenaGridProps) {
   const charMap = new Map(characters.map((c) => [c.id, c]))
   const playerCombatants = arena.combatants.filter(
     (c) => charMap.get(c.id)?.is_player
@@ -41,7 +42,7 @@ export default function ArenaGrid({ arena, characters, playerCharacterId }: Aren
             const combatant = combatantAt.get(`${x},${y}`)
             if (!tile) return <div key={`${x},${y}`} style={{ backgroundColor: '#09090b' }} />
             return (
-              <ArenaTileCell key={`${x},${y}`} tile={tile} indoor={arena.indoor}>
+              <ArenaTileCell key={`${x},${y}`} tile={tile} indoor={arena.indoor} floorColor={floorColor}>
                 {combatant && (
                   <CombatantToken
                     combatant={combatant}

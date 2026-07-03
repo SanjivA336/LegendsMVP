@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Request, HTTPException
 from ..firebase import get_db
-from ..models.user import User, UserCreate
+from ..models.user import User, UserCreate, UserPreferences
 from ..utils.auth import get_current_uid
 
 router = APIRouter()
@@ -17,14 +17,21 @@ async def upsert_user(payload: UserCreate, request: Request):
 
     if doc.exists:
         existing = doc.to_dict()
-        doc_ref.update({"display_name": payload.display_name})
-        user = User(**{**existing, "uid": uid, "display_name": payload.display_name})
+        updates = payload.model_dump(exclude_unset=True, exclude_none=True)
+        if payload.preferences is not None:
+            updates["preferences"] = payload.preferences.model_dump()
+        if updates:
+            doc_ref.update(updates)
+        user = User(**{**existing, **updates, "uid": uid})
     else:
+        if not payload.display_name:
+            raise HTTPException(400, "display_name is required to create a user")
         user = User(
             uid=uid,
             email="",
             display_name=payload.display_name,
             created_at=datetime.now(timezone.utc).isoformat(),
+            preferences=payload.preferences or UserPreferences(),
         )
         doc_ref.set(user.model_dump())
 

@@ -113,6 +113,11 @@ export interface ActionRecord {
   dice_results: number[];
   outcome: string;
   narrative: string;
+  round_number: number;
+  sequence: number;
+  display_name: string | null;
+  speech: string | null;
+  action_text: string | null;
 }
 
 // ── Request / Response Bodies ─────────────────────────────────────────────────

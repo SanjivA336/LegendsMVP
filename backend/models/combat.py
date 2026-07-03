@@ -117,6 +117,11 @@ class ActionRecord(BaseDocument):
     dice_results: list[int] = Field(default_factory=list)
     outcome: str = ""
     narrative: str = ""
+    round_number: int = 0
+    sequence: int = 0
+    display_name: str | None = None
+    speech: str | None = None
+    action_text: str | None = None
 
 
 # ── Request / Response Bodies ─────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { oocChat } from '../../api/narrator'
-import { PLAYER_COLORS, NARRATOR_COLOR } from '../../constants/colors'
+import { NARRATOR_COLOR } from '../../constants/colors'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 
 interface ChatMessage {
   id: string
@@ -22,6 +23,7 @@ export default function ChatTab({ adventureId, characterId, characterName: _char
   const [input, setInput] = useState('')
   const [thinking, setThinking] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const playerColors = usePlayerColors()
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -39,7 +41,7 @@ export default function ChatTab({ adventureId, characterId, characterName: _char
         id: crypto.randomUUID(),
         sender: 'player',
         label: playerLabel,
-        color: PLAYER_COLORS[0],
+        color: playerColors[0],
         text,
       },
     ])
@@ -98,9 +100,9 @@ export default function ChatTab({ adventureId, characterId, characterName: _char
               style={
                 msg.sender === 'player'
                   ? {
-                      backgroundColor: PLAYER_COLORS[0] + '22',
+                      backgroundColor: playerColors[0] + '22',
                       color: '#f4f4f5',
-                      border: `1px solid ${PLAYER_COLORS[0]}40`,
+                      border: `1px solid ${playerColors[0]}40`,
                     }
                   : { color: '#f4f4f5' }
               }
@@ -143,13 +145,13 @@ export default function ChatTab({ adventureId, characterId, characterName: _char
                 void handleSend()
               }
             }}
-            disabled={thinking || !adventureId}
+            disabled={thinking || !adventureId || !characterId}
             placeholder={thinking ? 'DM is thinking…' : 'Ask the DM something…'}
             className="flex-1 bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 px-2.5 py-1.5 rounded-xl text-xs focus:outline-none focus:border-accent transition-colors duration-150 disabled:opacity-50"
           />
           <button
             onClick={() => void handleSend()}
-            disabled={thinking || !input.trim() || !adventureId}
+            disabled={thinking || !input.trim() || !adventureId || !characterId}
             className="px-2.5 py-1.5 bg-accent hover:bg-accent-hover text-zinc-950 rounded-xl text-xs font-semibold transition-colors duration-150 disabled:opacity-40"
           >
             Send

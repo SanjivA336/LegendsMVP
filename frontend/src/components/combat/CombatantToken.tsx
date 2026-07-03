@@ -1,6 +1,7 @@
 import type { ArenaCombatant } from '../../types/combat'
 import type { Character } from '../../types/character'
-import { PLAYER_COLORS, NPC_HOSTILE } from '../../constants/colors'
+import { NPC_HOSTILE } from '../../constants/colors'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 
 interface CombatantTokenProps {
   combatant: ArenaCombatant
@@ -19,13 +20,14 @@ export default function CombatantToken({
 }: CombatantTokenProps) {
   const isDead = combatant.status.includes('dead')
   const hpRatio = combatant.hp / combatant.max_hp
+  const playerColors = usePlayerColors()
 
   let color: string
   if (character?.is_player) {
     const idx = players.indexOf(combatant)
     color = combatant.id === playerCharacterId
-      ? PLAYER_COLORS[0]
-      : PLAYER_COLORS[idx % PLAYER_COLORS.length]
+      ? playerColors[0]
+      : playerColors[idx % playerColors.length]
   } else {
     color = NPC_HOSTILE
   }

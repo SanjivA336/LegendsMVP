@@ -26,6 +26,7 @@ export default function AdventureListPage() {
     queryFn: fetchAdventures,
   })
 
+  const [filter, setFilter] = useState<'all' | 'owned' | 'member'>('all')
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [inviteCode, setInviteCode] = useState('')
@@ -76,6 +77,10 @@ export default function AdventureListPage() {
 
   const deletingAdv = adventures.find((a) => a.id === confirmDelete)
 
+  const filteredAdventures = adventures.filter((a) =>
+    filter === 'all' ? true : filter === 'owned' ? a.role === 'owner' : a.role !== 'owner'
+  )
+
   return (
     <>
       {/* Delete confirmation modal */}
@@ -118,6 +123,23 @@ export default function AdventureListPage() {
           </Link>
         </div>
 
+        {/* Owned / Member / All filter */}
+        <div className="flex gap-1 mb-6 p-1 bg-zinc-900 border border-zinc-800 rounded-xl w-fit">
+          {(['all', 'owned', 'member'] as const).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-3 py-1.5 text-sm rounded-lg transition-colors duration-150 ${
+                filter === f
+                  ? 'bg-accent text-zinc-950 font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-100'
+              }`}
+            >
+              {f === 'all' ? 'All' : f === 'owned' ? 'Owned' : 'Member'}
+            </button>
+          ))}
+        </div>
+
         {/* Join by invite code */}
         <div className="mb-6 flex gap-2">
           <input
@@ -152,9 +174,13 @@ export default function AdventureListPage() {
               Create your first adventure
             </Link>
           </div>
+        ) : filteredAdventures.length === 0 ? (
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900 p-12 flex flex-col items-center gap-4 text-center">
+            <p className="text-zinc-400">No adventures match this filter.</p>
+          </div>
         ) : (
           <div className="flex flex-col gap-3">
-            {adventures.map((adv) => (
+            {filteredAdventures.map((adv) => (
               <div
                 key={adv.id}
                 className="rounded-2xl border border-zinc-800 bg-zinc-900 p-5 flex items-center gap-4 hover:border-zinc-700 transition-colors duration-150"

@@ -1,12 +1,14 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { useGameStore } from '../store/gameStore'
 import { useAdventure } from '../hooks/useAdventure'
 import { useParty } from '../hooks/useCharacter'
 import { useRelationships } from '../hooks/useContextCards'
-import { useActionLog } from '../hooks/useCombat'
-import { narratorAct } from '../api/narrator'
+import { useActionLog, useEncounter } from '../hooks/useCombat'
+import { useRoundStatus, usePendingChecks } from '../hooks/useNarrator'
+import { submitRoundAction, forceResolveRound } from '../api/narrator'
+import { playerTurn } from '../api/combat'
 import GameLayout from '../components/layout/GameLayout'
 import ActionLog from '../components/action/ActionLog'
 import ActionInput from '../components/action/ActionInput'
@@ -21,7 +23,9 @@ export default function GamePage() {
 
   const [mapModalOpen, setMapModalOpen] = useState(false)
   const [pendingPlayerText, setPendingPlayerText] = useState<string | null>(null)
-  const [dmThinking, setDmThinking] = useState(false)
+  const [pendingPassed, setPendingPassed] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const lastConsumedRound = useRef(0)
 
   const setActiveAdventure = useGameStore((s) => s.setActiveAdventure)
   const activeCharacterId = useGameStore((s) => s.activeCharacterId)
@@ -38,38 +42,128 @@ export default function GamePage() {
   const { data: party = [], isLoading: partyLoading } = useParty(id ?? null)
   const { data: relationships = [] } = useRelationships(id ?? null)
   const { data: actions = [], isLoading: actionsLoading } = useActionLog(activeEncounterId)
+  const { data: roundStatus } = useRoundStatus(activeEncounterId)
+  const { data: pendingChecks = [] } = usePendingChecks(activeEncounterId, roundStatus?.round_number ?? 0)
+  const { data: encounter } = useEncounter(activeEncounterId)
+
+  // Scope the stage bar to who's actually present, falling back to the whole roster
+  // until the first round populates stage_ids (see backend Part B).
+  const stagedParty = encounter?.stage_ids?.length
+    ? party.filter((c) => encounter.stage_ids.includes(c.id))
+    : party
 
   const adventureExists = adventures.some((a) => a.id === id)
   const openingNarrative = adventure?.openingNarrative ?? null
 
+  // Cross-client sync: when polling reveals a round resolved (by us or anyone else), refetch the log
+  useEffect(() => {
+    if (!roundStatus || !id) return
+    if (roundStatus.status === 'resolved' && roundStatus.round_number > lastConsumedRound.current) {
+      lastConsumedRound.current = roundStatus.round_number
+      queryClient.invalidateQueries({ queryKey: ['action-log', activeEncounterId] })
+      setPendingPlayerText(null)
+      setPendingPassed(false)
+    }
+  }, [roundStatus, id, activeEncounterId, queryClient])
+
+  // A resolved/idle round has no bearing on the NEXT round (which only gets created
+  // lazily on the next submission) -- only an in-progress round can mean "you've already acted."
+  const roundInProgress = roundStatus?.status === 'collecting' || roundStatus?.status === 'awaiting_checks'
+  const myEntry = roundStatus?.entries.find((e) => e.character_id === activeCharacterId)
+  const iHaveActed = roundInProgress && myEntry ? myEntry.status !== 'awaiting' : false
+  const isResolving = roundStatus?.status === 'resolving'
+  const othersWaiting = roundStatus?.entries.filter(
+    (e) => e.character_id !== activeCharacterId && e.status === 'awaiting'
+  ) ?? []
+  const canForceResolve = adventure?.role === 'owner' || adventure?.role === 'admin'
+
   const handleSendAction = useCallback(async (text: string) => {
-    if (!id || !activeCharacterId || dmThinking) return
+    if (!id || !activeCharacterId || submitting || iHaveActed) return
 
     setPendingPlayerText(text)
-    setDmThinking(true)
+    setPendingPassed(false)
+    setSubmitting(true)
 
     try {
-      const result = await narratorAct({
+      const result = await submitRoundAction({
         adventure_id: id,
         encounter_id: activeEncounterId ?? undefined,
-        player_text: text,
         character_id: activeCharacterId,
+        player_text: text,
       })
 
-      // Save encounter ID so the action log fetches for this encounter
       if (!activeEncounterId || activeEncounterId !== result.encounter_id) {
         setNarrativeEncounter(id, result.encounter_id)
       }
 
-      // Invalidate the action log so it refetches with both new entries
-      await queryClient.invalidateQueries({ queryKey: ['action-log', result.encounter_id] })
+      if (result.resolved) {
+        lastConsumedRound.current = result.round_number
+        await queryClient.invalidateQueries({ queryKey: ['action-log', result.encounter_id] })
+        setPendingPlayerText(null)
+      }
     } catch (err) {
-      console.error('Narrator act failed:', err)
-    } finally {
+      console.error('Round submit failed:', err)
       setPendingPlayerText(null)
-      setDmThinking(false)
+    } finally {
+      setSubmitting(false)
     }
-  }, [id, activeCharacterId, activeEncounterId, dmThinking, setNarrativeEncounter, queryClient])
+  }, [id, activeCharacterId, activeEncounterId, submitting, iHaveActed, setNarrativeEncounter, queryClient])
+
+  const handlePass = useCallback(async () => {
+    if (!id || !activeCharacterId || submitting || iHaveActed) return
+
+    setPendingPassed(true)
+    setPendingPlayerText(null)
+    setSubmitting(true)
+
+    try {
+      const result = await submitRoundAction({
+        adventure_id: id,
+        encounter_id: activeEncounterId ?? undefined,
+        character_id: activeCharacterId,
+        passed: true,
+      })
+
+      if (!activeEncounterId || activeEncounterId !== result.encounter_id) {
+        setNarrativeEncounter(id, result.encounter_id)
+      }
+
+      if (result.resolved) {
+        lastConsumedRound.current = result.round_number
+        await queryClient.invalidateQueries({ queryKey: ['action-log', result.encounter_id] })
+        setPendingPassed(false)
+      }
+    } catch (err) {
+      console.error('Pass failed:', err)
+      setPendingPassed(false)
+    } finally {
+      setSubmitting(false)
+    }
+  }, [id, activeCharacterId, activeEncounterId, submitting, iHaveActed, setNarrativeEncounter, queryClient])
+
+  const handleEndTurn = useCallback(async () => {
+    if (!activeEncounterId || !activeCharacterId) return
+    try {
+      await playerTurn(activeEncounterId, { actor_id: activeCharacterId, action_type: 'end_turn' })
+      await queryClient.invalidateQueries({ queryKey: ['arena', activeEncounterId] })
+      await queryClient.invalidateQueries({ queryKey: ['action-log', activeEncounterId] })
+    } catch (err) {
+      console.error('End turn failed:', err)
+    }
+  }, [activeEncounterId, activeCharacterId, queryClient])
+
+  const handleForceResolve = useCallback(async () => {
+    if (!activeEncounterId) return
+    try {
+      const result = await forceResolveRound(activeEncounterId)
+      lastConsumedRound.current = result.round_number
+      await queryClient.invalidateQueries({ queryKey: ['action-log', activeEncounterId] })
+      setPendingPlayerText(null)
+      setPendingPassed(false)
+    } catch (err) {
+      console.error('Force resolve failed:', err)
+    }
+  }, [activeEncounterId, queryClient])
 
   if (!adventureExists && !partyLoading) {
     return (
@@ -87,7 +181,7 @@ export default function GamePage() {
 
   const stageBar = (
     <StageBar
-      stageCharacters={party}
+      stageCharacters={stagedParty}
       relationships={relationships}
       playerCharacterId={activeCharacterId}
     />
@@ -114,12 +208,34 @@ export default function GamePage() {
           playerCharacterId={activeCharacterId}
           isLoading={actionsLoading}
           pendingPlayerText={pendingPlayerText}
-          dmThinking={dmThinking}
+          pendingPassed={pendingPassed}
+          dmThinking={isResolving}
+          pendingChecks={pendingChecks}
         />
+        {othersWaiting.length > 0 && (
+          <div className="px-4 py-2 text-xs text-zinc-500 border-t border-zinc-800/50 flex items-center gap-2 flex-wrap shrink-0">
+            <span>Waiting for:</span>
+            {othersWaiting.map((e) => (
+              <span key={e.character_id} className="text-zinc-400">
+                {e.character_name}{e.kind === 'actor' ? ' (Actor)' : ''}
+              </span>
+            ))}
+            {canForceResolve && (
+              <button
+                onClick={handleForceResolve}
+                className="ml-auto text-zinc-500 hover:text-red-400 transition-colors duration-150"
+              >
+                Force Resolve Round
+              </button>
+            )}
+          </div>
+        )}
         <ActionInput
           onSendAction={handleSendAction}
+          onPass={handlePass}
+          onEndTurn={handleEndTurn}
           onOpenMap={() => setMapModalOpen(true)}
-          disabled={dmThinking}
+          disabled={submitting || iHaveActed || isResolving}
         />
       </div>
       <WorldMapModal open={mapModalOpen} onClose={() => setMapModalOpen(false)} />

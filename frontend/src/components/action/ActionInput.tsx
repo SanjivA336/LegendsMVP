@@ -3,12 +3,13 @@ import { useGameStore } from '../../store/gameStore'
 
 interface ActionInputProps {
   onSendAction: (text: string) => void
+  onPass?: () => void
   onEndTurn?: () => void
   onOpenMap?: () => void
   disabled?: boolean
 }
 
-export default function ActionInput({ onSendAction, onEndTurn, onOpenMap, disabled = false }: ActionInputProps) {
+export default function ActionInput({ onSendAction, onPass, onEndTurn, onOpenMap, disabled = false }: ActionInputProps) {
   const [text, setText] = useState('')
   const combatActive = useGameStore((s) => s.combatActive)
 
@@ -58,6 +59,16 @@ export default function ActionInput({ onSendAction, onEndTurn, onOpenMap, disabl
         >
           Send
         </button>
+        {onPass && (
+          <button
+            type="button"
+            onClick={onPass}
+            disabled={disabled}
+            className="px-3 py-2 text-zinc-400 hover:text-zinc-100 border border-zinc-700 hover:border-zinc-600 font-semibold text-sm rounded-lg transition-colors duration-150 disabled:opacity-40"
+          >
+            Pass
+          </button>
+        )}
       </form>
     </div>
   )

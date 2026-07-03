@@ -20,10 +20,10 @@ async def list_members(adventure_id: str, request: Request):
 @router.post("/adventures/{adventure_id}/members", status_code=201)
 async def add_member(adventure_id: str, payload: MemberCreate, request: Request):
     uid = await get_current_uid(request)
-    caller = await require_member(adventure_id, uid, "admin")
+    await require_member(adventure_id, uid, "admin")
 
-    if payload.role in ("owner", "admin") and caller.role != "owner":
-        raise HTTPException(403, "Only the owner can grant admin or owner roles")
+    if payload.role == "owner":
+        raise HTTPException(400, "Use the ownership transfer endpoint to grant ownership")
 
     db = get_db()
     existing = list(
@@ -50,7 +50,7 @@ async def add_member(adventure_id: str, payload: MemberCreate, request: Request)
 @router.patch("/adventures/{adventure_id}/members/{member_id}")
 async def update_member(adventure_id: str, member_id: str, payload: MemberUpdate, request: Request):
     uid = await get_current_uid(request)
-    caller = await require_member(adventure_id, uid, "admin")
+    await require_member(adventure_id, uid, "admin")
     db = get_db()
 
     doc = db.collection("members").document(member_id).get()
@@ -61,14 +61,12 @@ async def update_member(adventure_id: str, member_id: str, payload: MemberUpdate
 
     if target.adventure_id != adventure_id:
         raise HTTPException(404, "Member not found")
-    if target.user_uid == uid:
+    if target.user_uid == uid and payload.role is not None:
         raise HTTPException(403, "Cannot change your own role")
-    if target.role == "owner":
+    if target.role == "owner" and payload.role is not None:
         raise HTTPException(403, "Cannot change the owner's role")
-    if target.role == "admin" and caller.role != "owner":
-        raise HTTPException(403, "Only the owner can change an admin's role")
-    if payload.role in ("owner", "admin") and caller.role != "owner":
-        raise HTTPException(403, "Only the owner can promote to admin")
+    if payload.role == "owner":
+        raise HTTPException(400, "Use the ownership transfer endpoint to grant ownership")
 
     updates: dict = {}
     if payload.role is not None:
@@ -85,7 +83,7 @@ async def update_member(adventure_id: str, member_id: str, payload: MemberUpdate
 @router.delete("/adventures/{adventure_id}/members/{member_id}", status_code=204)
 async def remove_member(adventure_id: str, member_id: str, request: Request):
     uid = await get_current_uid(request)
-    caller = await require_member(adventure_id, uid, "admin")
+    await require_member(adventure_id, uid, "admin")
     db = get_db()
 
     doc = db.collection("members").document(member_id).get()
@@ -98,7 +96,35 @@ async def remove_member(adventure_id: str, member_id: str, request: Request):
         raise HTTPException(404, "Member not found")
     if target.role == "owner":
         raise HTTPException(403, "Cannot remove the owner")
-    if target.role == "admin" and caller.role != "owner":
-        raise HTTPException(403, "Only the owner can remove an admin")
 
     db.collection("members").document(member_id).delete()
+
+
+@router.post("/adventures/{adventure_id}/members/{member_id}/transfer-ownership")
+async def transfer_ownership(adventure_id: str, member_id: str, request: Request):
+    uid = await get_current_uid(request)
+    caller = await require_member(adventure_id, uid, "owner")
+    db = get_db()
+
+    doc = db.collection("members").document(member_id).get()
+    if not doc.exists:
+        raise HTTPException(404, "Member not found")
+
+    target = Member(**{**doc.to_dict(), "id": doc.id})
+
+    if target.adventure_id != adventure_id:
+        raise HTTPException(404, "Member not found")
+    if target.user_uid == uid:
+        raise HTTPException(400, "You are already the owner")
+    if target.role == "owner":
+        raise HTTPException(400, "Member is already the owner")
+
+    batch = db.batch()
+    batch.update(db.collection("members").document(caller.id), {"role": "admin"})
+    batch.update(db.collection("members").document(target.id), {"role": "owner"})
+    batch.commit()
+
+    return {
+        "previous_owner": {**caller.model_dump(), "role": "admin"},
+        "new_owner": {**target.model_dump(), "role": "owner"},
+    }

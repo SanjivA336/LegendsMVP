@@ -15,3 +15,8 @@ class AdventureCreate(BaseModel):
     name: str
     world_name: str
     world_map_id: str | None = None
+
+
+class AdventureUpdate(BaseModel):
+    name: str | None = None
+    world_name: str | None = None

@@ -3,7 +3,8 @@ import Modal from '../ui/Modal'
 import RelationshipGraph from './RelationshipGraph'
 import type { Character } from '../../types/character'
 import type { RelationshipEdge } from '../../types/context'
-import { PLAYER_COLORS, NPC_NEUTRAL } from '../../constants/colors'
+import { NPC_NEUTRAL } from '../../constants/colors'
+import { usePlayerColors } from '../../hooks/usePlayerColors'
 
 interface CastModalProps {
   open: boolean
@@ -15,7 +16,8 @@ interface CastModalProps {
 
 function buildColorMap(
   characters: Character[],
-  playerCharacterId: string | null
+  playerCharacterId: string | null,
+  playerColors: string[]
 ): Record<string, string> {
   const map: Record<string, string> = {}
   const players = characters.filter((c) => c.is_player)
@@ -23,8 +25,8 @@ function buildColorMap(
     if (char.is_player) {
       const idx = players.indexOf(char)
       map[char.id] = char.id === playerCharacterId
-        ? PLAYER_COLORS[0]
-        : PLAYER_COLORS[idx % PLAYER_COLORS.length]
+        ? playerColors[0]
+        : playerColors[idx % playerColors.length]
     } else {
       map[char.id] = NPC_NEUTRAL
     }
@@ -40,7 +42,8 @@ export default function CastModal({
   playerCharacterId,
 }: CastModalProps) {
   const [view, setView] = useState<'graph' | 'list'>('graph')
-  const colorMap = buildColorMap(characters, playerCharacterId)
+  const playerColors = usePlayerColors()
+  const colorMap = buildColorMap(characters, playerCharacterId, playerColors)
 
   return (
     <Modal open={open} onClose={onClose} title="Cast" maxWidth="max-w-md">

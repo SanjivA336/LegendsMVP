@@ -4,6 +4,7 @@ import type { ArenaTile } from '../../types/combat'
 interface ArenaTileCellProps {
   tile: ArenaTile
   indoor: boolean
+  floorColor?: string
   children?: React.ReactNode
 }
 
@@ -14,7 +15,7 @@ function edgeBorderStyle(level: number): { style: string; color: string; width: 
   return { style: 'solid', color: '#3f3f46', width: '1px' }
 }
 
-export default function ArenaTileCell({ tile, indoor, children }: ArenaTileCellProps) {
+export default function ArenaTileCell({ tile, indoor, floorColor, children }: ArenaTileCellProps) {
   const [n, e, s, w] = tile.edges
 
   const tileStyle: CSSProperties = {
@@ -22,7 +23,7 @@ export default function ArenaTileCell({ tile, indoor, children }: ArenaTileCellP
     backgroundColor: tile.passable
       ? indoor
         ? '#3f3f46'
-        : '#166534'
+        : (floorColor ?? '#166534')
       : '#1c1917',
     borderTopStyle:    edgeBorderStyle(n).style as CSSProperties['borderTopStyle'],
     borderTopColor:    edgeBorderStyle(n).color,

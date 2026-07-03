@@ -4,6 +4,8 @@ interface ActionEntryProps {
   narrative: string
   actionType: string
   outcome?: string
+  speech?: string | null
+  actionText?: string | null
 }
 
 function parseNarrative(text: string): { speech: string | null; action: string | null } {
@@ -18,8 +20,17 @@ function parseNarrative(text: string): { speech: string | null; action: string |
   return { speech: null, action: text || null }
 }
 
-export default function ActionEntry({ actorName, actorColor, narrative, actionType, outcome }: ActionEntryProps) {
-  const { speech, action } = parseNarrative(narrative)
+export default function ActionEntry({
+  actorName, actorColor, narrative, actionType, outcome, speech: explicitSpeech, actionText: explicitAction,
+}: ActionEntryProps) {
+  // Structured speech/action (from NPC dialogue records) takes precedence over the
+  // regex-based guess, which stays as a fallback for player/DM records -- ActionRecord
+  // always carries these as `null` (not `undefined`) when unset, so the check must be
+  // "is either genuinely non-null," not just "was a prop passed."
+  const hasStructured = explicitSpeech != null || explicitAction != null
+  const { speech, action } = hasStructured
+    ? { speech: explicitSpeech ?? null, action: explicitAction ?? null }
+    : parseNarrative(narrative)
   const isEndTurn = actionType === 'end_turn'
 
   if (isEndTurn) {
