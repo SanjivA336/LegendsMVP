@@ -9,6 +9,7 @@ from ..routers.context import get_cards_for_prompt
 from ..models.combat import Encounter, ActionRecord
 from ..models.actor import Actor, AdventureActorSlot
 from ..models.round import PendingRound, RoundEntry, ParticipantKind, EntryStatus, PendingCheck, CheckStatus
+from ..models.character import character_name_from_doc, character_field_from_doc
 from ..utils.minigames import dice
 
 router = APIRouter()
@@ -42,7 +43,8 @@ def _result_hint(score: float) -> str:
 
 class OpeningSceneRequest(BaseModel):
     adventure_id: str
-    character_name: str
+    character_name: str | None = None   # None for the "Be the DM" launch path, where no
+                                          # Character exists yet to name
     world_name: str
 
 
@@ -128,101 +130,9 @@ async def ooc_chat(payload: OOCRequest):
     return {"response": result.get("response", result.get("narrative", ""))}
 
 
-# ── Actor Turn (legacy, unwired from frontend, left as-is) ────────────────────
-
-class ActorTurnRequest(BaseModel):
-    adventure_id: str
-    encounter_id: str | None = None
-    last_player_action: str
-
-
-class ActorAction(BaseModel):
-    actor_id: str
-    character_name: str
-    action: str
-    narrative: str
-
-
-class ActorTurnResponse(BaseModel):
-    actions: list[ActorAction]
-    narrative: str
-
-
 _STANCE_LABELS = {1: "Pacifist", 2: "Defensive", 3: "Balanced", 4: "Aggressive", 5: "Berserker"}
 _TACTICS_LABELS = {1: "Calculated", 2: "Methodical", 3: "Adaptive", 4: "Bold", 5: "Reckless"}
 _DISPOSITION_LABELS = {1: "Noble", 2: "Principled", 3: "Pragmatic", 4: "Cunning", 5: "Ruthless"}
-
-
-@router.post("/narrator/actor-turn", response_model=ActorTurnResponse)
-async def actor_turn(payload: ActorTurnRequest):
-    db = get_db()
-    provider = get_provider()
-
-    slot_docs = list(
-        db.collection("adventure_actor_slots")
-        .where("adventure_id", "==", payload.adventure_id)
-        .stream()
-    )
-    if not slot_docs:
-        return ActorTurnResponse(actions=[], narrative="")
-
-    actors_data = []
-    for slot_doc in slot_docs:
-        slot = AdventureActorSlot(**{**slot_doc.to_dict(), "id": slot_doc.id})
-        actor_doc = db.collection("actors").document(slot.actor_id).get()
-        if not actor_doc.exists:
-            continue
-        actor = Actor(**{**actor_doc.to_dict(), "id": actor_doc.id})
-
-        char_name = "Unknown"
-        if slot.character_id:
-            char_doc = db.collection("characters").document(slot.character_id).get()
-            if char_doc.exists:
-                char_name = char_doc.to_dict().get("name", "Unknown")
-
-        actors_data.append({
-            "slot": slot,
-            "actor": actor,
-            "character_name": char_name,
-        })
-
-    if not actors_data:
-        return ActorTurnResponse(actions=[], narrative="")
-
-    prompt = _build_actor_turn_prompt(payload.last_player_action, actors_data)
-    try:
-        result = await provider.generate(prompt)
-    except (ValueError, Exception) as exc:
-        raise HTTPException(status_code=502, detail=f"AI provider error: {exc}") from exc
-
-    raw_actions = result.get("actions", [])
-    actor_actions: list[ActorAction] = []
-
-    for i, entry in enumerate(raw_actions):
-        actor_id = actors_data[i]["slot"].actor_id if i < len(actors_data) else "unknown"
-        char_name = actors_data[i]["character_name"] if i < len(actors_data) else "Unknown"
-        action = ActorAction(
-            actor_id=actor_id,
-            character_name=char_name,
-            action=entry.get("action", ""),
-            narrative=entry.get("narrative", ""),
-        )
-        actor_actions.append(action)
-
-        record = ActionRecord(
-            adventure_id=payload.adventure_id,
-            encounter_id=payload.encounter_id or "",
-            actor_id=actor_id,
-            action_type="narrative",
-            description=action.action,
-            narrative=action.narrative,
-        )
-        db.collection("actions").document(record.id).set(record.model_dump())
-
-    return ActorTurnResponse(
-        actions=actor_actions,
-        narrative=result.get("narrative", ""),
-    )
 
 
 # ── Turn-Batching: Rounds ───────────────────────────────────────────────────────
@@ -300,79 +210,83 @@ def _populate_stage_ids_if_empty(encounter: Encounter, db) -> Encounter:
     if encounter.stage_ids:
         return encounter
 
+    # is_player lives inside `fields` now, not a top-level document field, so it can't
+    # be pushed into the Firestore query -- filter in Python after narrowing by kind.
     char_docs = list(
-        db.collection("characters")
+        db.collection("instances")
         .where("adventure_id", "==", encounter.adventure_id)
-        .where("is_player", "==", True)
+        .where("kind", "==", "character")
         .stream()
     )
-    stage_ids = [d.id for d in char_docs]
+    stage_ids = [d.id for d in char_docs if character_field_from_doc(d.to_dict(), "is_player", False)]
     if stage_ids:
         db.collection("encounters").document(encounter.id).update({"stage_ids": stage_ids})
         encounter.stage_ids = stage_ids
     return encounter
 
 
-def _find_actor_id_for_character(adventure_id: str, character_id: str, db) -> str | None:
-    slot_docs = list(
-        db.collection("adventure_actor_slots")
-        .where("adventure_id", "==", adventure_id)
-        .where("character_id", "==", character_id)
-        .limit(1)
-        .stream()
-    )
-    if not slot_docs:
-        return None
-    return slot_docs[0].to_dict().get("actor_id")
+def _actor_id_map(adventure_id: str, db) -> dict[str, str]:
+    """character_id -> actor_id for every AI-controlled slot in the adventure, in one query."""
+    slot_docs = db.collection("adventure_actor_slots").where("adventure_id", "==", adventure_id).stream()
+    return {d.to_dict().get("character_id"): d.to_dict().get("actor_id") for d in slot_docs}
 
 
 def _load_staged_actors(adventure_id: str, character_ids: list[str], db) -> list[dict]:
+    if not character_ids:
+        return []
+
+    slot_docs = db.collection("adventure_actor_slots").where("adventure_id", "==", adventure_id).stream()
+    slots_by_char = {}
+    for d in slot_docs:
+        data = d.to_dict()
+        char_id = data.get("character_id")
+        if char_id in character_ids:
+            slots_by_char[char_id] = AdventureActorSlot(**{**data, "id": d.id})
+
+    actor_refs = [db.collection("actors").document(slot.actor_id) for slot in slots_by_char.values()]
+    actors_by_id = {d.id: Actor(**{**d.to_dict(), "id": d.id}) for d in db.get_all(actor_refs) if d.exists} if actor_refs else {}
+
+    char_refs = [db.collection("instances").document(cid) for cid in character_ids]
+    names_by_char = {d.id: character_name_from_doc(d.to_dict()) for d in db.get_all(char_refs) if d.exists} if char_refs else {}
+
     actors_data = []
     for char_id in character_ids:
-        slot_docs = list(
-            db.collection("adventure_actor_slots")
-            .where("adventure_id", "==", adventure_id)
-            .where("character_id", "==", char_id)
-            .limit(1)
-            .stream()
-        )
-        if not slot_docs:
+        slot = slots_by_char.get(char_id)
+        if slot is None:
             continue
-        slot = AdventureActorSlot(**{**slot_docs[0].to_dict(), "id": slot_docs[0].id})
-        actor_doc = db.collection("actors").document(slot.actor_id).get()
-        if not actor_doc.exists:
+        actor = actors_by_id.get(slot.actor_id)
+        if actor is None:
             continue
-        actor = Actor(**{**actor_doc.to_dict(), "id": actor_doc.id})
-        char_doc = db.collection("characters").document(char_id).get()
-        char_name = char_doc.to_dict().get("name", "Unknown") if char_doc.exists else "Unknown"
-        actors_data.append({"slot": slot, "actor": actor, "character_name": char_name})
+        actors_data.append({"slot": slot, "actor": actor, "character_name": names_by_char.get(char_id, "Unknown")})
     return actors_data
 
 
-def _start_new_round(encounter: Encounter, db) -> PendingRound:
+def _start_new_round(encounter: Encounter, db, prior_round_number: int = 0) -> PendingRound:
+    actor_by_char = _actor_id_map(encounter.adventure_id, db)
+
+    char_refs = [db.collection("instances").document(cid) for cid in encounter.stage_ids]
+    names_by_char = {d.id: character_name_from_doc(d.to_dict()) for d in db.get_all(char_refs) if d.exists} if char_refs else {}
+
     entries = []
     for char_id in encounter.stage_ids:
-        actor_id = _find_actor_id_for_character(encounter.adventure_id, char_id, db)
+        actor_id = actor_by_char.get(char_id)
         entries.append(RoundEntry(
             character_id=char_id,
+            character_name=names_by_char.get(char_id, "Unknown"),
             kind="actor" if actor_id else "human",
             actor_id=actor_id,
         ))
-
-    round_ref = db.collection("pending_rounds").document(encounter.id)
-    prior = round_ref.get()
-    round_number = (prior.to_dict().get("round_number", 0) + 1) if prior.exists else 1
 
     round_ = PendingRound(
         id=encounter.id,
         encounter_id=encounter.id,
         adventure_id=encounter.adventure_id,
-        round_number=round_number,
+        round_number=prior_round_number + 1,
         status="collecting",
         entries=entries,
         created_at=_now_iso(),
     )
-    round_ref.set(round_.model_dump())
+    db.collection("pending_rounds").document(encounter.id).set(round_.model_dump())
     return round_
 
 
@@ -398,16 +312,17 @@ def _apply_entry_txn(transaction, round_ref, character_id: str, text: str | None
     return round_, just_flipped
 
 
-async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provider: AIProvider) -> str:
+async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provider: AIProvider, bible: dict | None = None) -> str:
     submitted = [e for e in round_.entries if e.status == "submitted"]
 
-    bible_docs = list(
-        db.collection("world_bible")
-        .where("adventure_id", "==", encounter.adventure_id)
-        .limit(1)
-        .stream()
-    )
-    bible = bible_docs[0].to_dict() if bible_docs else {}
+    if bible is None:
+        bible_docs = list(
+            db.collection("world_bible")
+            .where("adventure_id", "==", encounter.adventure_id)
+            .limit(1)
+            .stream()
+        )
+        bible = bible_docs[0].to_dict() if bible_docs else {}
 
     ws_docs = list(
         db.collection("world_state")
@@ -433,13 +348,11 @@ async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provide
 
     entries_data = []
     for e in round_.entries:
-        char_doc = db.collection("characters").document(e.character_id).get()
-        name = char_doc.to_dict().get("name", "Someone") if char_doc.exists else "Someone"
         check_hint = None
         check = checks_by_char.get(e.character_id)
         if check and check.score is not None:
             check_hint = _result_hint(check.score)
-        entries_data.append({"name": name, "text": e.text, "passed": e.status == "passed", "check_hint": check_hint})
+        entries_data.append({"name": e.character_name, "text": e.text, "passed": e.status == "passed", "check_hint": check_hint})
 
     prompt = _build_round_prompt(entries_data, bible, world_facts, cards)
     try:
@@ -447,9 +360,21 @@ async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provide
     except (ValueError, Exception) as exc:
         raise HTTPException(status_code=502, detail=f"AI provider error: {exc}") from exc
 
-    dm_narrative = result.get("narrative", "")
+    return _persist_round_resolution(round_, encounter, db, result, checks_by_char)
 
-    new_action_ids = []
+
+def _persist_round_resolution(
+    round_: PendingRound, encounter: Encounter, db, result: dict, checks_by_char: dict[str, PendingCheck]
+) -> str:
+    """Turns an already-generated DM response into ActionRecords and closes out the round.
+
+    Split out from _resolve_round so the merged check-determination+narration prompt
+    (see _determine_checks_and_maybe_resolve) can persist a response it already has,
+    without triggering a second, separate narration call for the common no-check case.
+    """
+    submitted = [e for e in round_.entries if e.status == "submitted"]
+    dm_narrative = result.get("narrative") or ""
+
     seq = 0
     for e in submitted:
         check = checks_by_char.get(e.character_id)
@@ -473,7 +398,6 @@ async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provide
             sequence=seq,
         )
         db.collection("actions").document(record.id).set(record.model_dump())
-        new_action_ids.append(record.id)
         seq += 1
 
     dm_record = ActionRecord(
@@ -487,7 +411,6 @@ async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provide
         sequence=seq,
     )
     db.collection("actions").document(dm_record.id).set(dm_record.model_dump())
-    new_action_ids.append(dm_record.id)
     seq += 1
 
     for npc in (result.get("npcs") or [])[:2]:
@@ -519,12 +442,9 @@ async def _resolve_round(round_: PendingRound, encounter: Encounter, db, provide
             sequence=seq,
         )
         db.collection("actions").document(npc_record.id).set(npc_record.model_dump())
-        new_action_ids.append(npc_record.id)
         seq += 1
 
-    db.collection("encounters").document(encounter.id).update({
-        "action_ids": encounter.action_ids + new_action_ids
-    })
+    db.collection("encounters").document(encounter.id).update({"last_dm_narrative": dm_narrative})
 
     round_.status = "resolved"
     round_.narrative = dm_narrative
@@ -538,11 +458,13 @@ async def _determine_checks_and_maybe_resolve(
     round_: PendingRound, encounter: Encounter, db, provider: AIProvider
 ) -> str | None:
     """
-    Decides which of this round's submitted actions need a skill check. If none do
-    (or nothing was submitted), resolves the round immediately and returns its narrative.
-    If checks are needed, creates PendingCheck docs (auto-rolling any Actor-owned ones),
-    moves the round to 'awaiting_checks', and returns None -- narration happens later,
-    once every check is resolved (see resolve_check).
+    Single LLM call that decides which of this round's submitted actions need a skill
+    check AND, if none do, narrates the round in that same response -- avoiding a second
+    call for the common (no-check) case. If checks ARE needed, creates PendingCheck docs
+    (auto-rolling any Actor-owned ones), moves the round to 'awaiting_checks', and returns
+    None -- narration happens later via a separate _resolve_round call once every check is
+    resolved (see resolve_check); that second call is unavoidable since the outcome can't
+    be narrated before the roll it depends on has happened.
     """
     submitted = [e for e in round_.entries if e.status == "submitted"]
     if not submitted:
@@ -557,26 +479,50 @@ async def _determine_checks_and_maybe_resolve(
     bible = bible_docs[0].to_dict() if bible_docs else {}
     attr_names = bible.get("attribute_names") or DEFAULT_SKILL_NAMES
 
-    entries_data = []
-    for e in submitted:
-        char_doc = db.collection("characters").document(e.character_id).get()
-        name = char_doc.to_dict().get("name", "Someone") if char_doc.exists else "Someone"
-        entries_data.append({"character_id": e.character_id, "name": name, "text": e.text})
+    ws_docs = list(
+        db.collection("world_state")
+        .where("adventure_id", "==", encounter.adventure_id)
+        .limit(1)
+        .stream()
+    )
+    world_facts: list[str] = ws_docs[0].to_dict().get("facts", []) if ws_docs else []
 
-    prompt = _build_check_determination_prompt(entries_data, attr_names)
+    combined_text = " ".join(e.text or "" for e in submitted)
+    cards = get_cards_for_prompt(encounter.adventure_id, "narrative", combined_text, db)
+
+    # e.character_name is already denormalized onto the round entry at round-start,
+    # so no per-entry character read is needed here (or in the check-creation loop below).
+    # All entries (not just submitted) go in so the narration branch, if taken, has the
+    # same view of the round _resolve_round would otherwise build separately.
+    all_entries_data = [
+        {"character_id": e.character_id, "name": e.character_name, "text": e.text, "passed": e.status == "passed"}
+        for e in round_.entries
+    ]
+    name_by_char = {d["character_id"]: d["name"] for d in all_entries_data}
+
+    prompt = _build_round_and_checks_prompt(all_entries_data, bible, world_facts, cards, attr_names)
     try:
         result = await provider.generate(prompt)
     except (ValueError, Exception):
-        result = {"checks": []}
+        result = {"checks": [], "narrative": None}
 
     valid_char_ids = {e.character_id for e in submitted}
     raw_checks = [c for c in result.get("checks", []) if c.get("character_id") in valid_char_ids]
 
     if not raw_checks:
-        return await _resolve_round(round_, encounter, db, provider)
+        narrative = result.get("narrative")
+        if narrative:
+            # The model already narrated in this same response -- persist it directly
+            # instead of firing a second, separate narration call.
+            return _persist_round_resolution(round_, encounter, db, result, {})
+        # Model returned neither checks nor narrative (non-compliant) -- fall back to a
+        # dedicated narration call rather than silently resolving with empty text.
+        return await _resolve_round(round_, encounter, db, provider, bible=bible)
 
     round_.status = "awaiting_checks"
     db.collection("pending_rounds").document(encounter.id).set(round_.model_dump())
+
+    actor_by_char = _actor_id_map(encounter.adventure_id, db)
 
     seen_char_ids: set[str] = set()
     for c in raw_checks:
@@ -585,8 +531,7 @@ async def _determine_checks_and_maybe_resolve(
             continue  # at most one check per action for now
         seen_char_ids.add(char_id)
 
-        char_doc = db.collection("characters").document(char_id).get()
-        char_name = char_doc.to_dict().get("name", "Someone") if char_doc.exists else "Someone"
+        char_name = name_by_char.get(char_id, "Someone")
         skill_key = c.get("skill_key") or "strength"
         target = float(c.get("target") or 12)
         show_target = bool(c.get("show_target", True))
@@ -602,8 +547,7 @@ async def _determine_checks_and_maybe_resolve(
             target=target,
         )
 
-        actor_id_for_char = _find_actor_id_for_character(encounter.adventure_id, char_id, db)
-        if actor_id_for_char:
+        if actor_by_char.get(char_id):
             # Actors only ever roll dice, and do so immediately -- no UI wait.
             raw_result, score = dice.roll_and_score(check.die_size, target, check.adv_disadv)
             check.status = "resolved"
@@ -617,11 +561,12 @@ async def _determine_checks_and_maybe_resolve(
         .where("encounter_id", "==", encounter.id)
         .where("round_number", "==", round_.round_number)
         .where("status", "==", "pending")
+        .limit(1)
         .stream()
     )
     if not remaining:
         # Every flagged check belonged to an Actor and already auto-resolved.
-        return await _resolve_round(round_, encounter, db, provider)
+        return await _resolve_round(round_, encounter, db, provider, bible=bible)
     return None
 
 
@@ -642,16 +587,8 @@ async def _run_actor_auto_submit(adventure_id: str, encounter_id: str, round_num
     if not actors_data:
         return
 
-    prev_records = list(
-        db.collection("actions")
-        .where("encounter_id", "==", encounter_id)
-        .where("actor_id", "==", "narrator")
-        .stream()
-    )
-    prev_narrative = ""
-    if prev_records:
-        latest = max(prev_records, key=lambda d: d.to_dict().get("round_number", 0))
-        prev_narrative = latest.to_dict().get("narrative", "")
+    encounter_doc = db.collection("encounters").document(encounter_id).get()
+    prev_narrative = encounter_doc.to_dict().get("last_dm_narrative") or "" if encounter_doc.exists else ""
 
     prompt = _build_actor_round_prompt(actors_data, prev_narrative)
     try:
@@ -674,7 +611,6 @@ async def _run_actor_auto_submit(adventure_id: str, encounter_id: str, round_num
         transaction = db.transaction()
         updated_round, just_flipped = _apply_entry_txn(transaction, round_ref, char_id, text, False)
         if just_flipped:
-            encounter_doc = db.collection("encounters").document(encounter_id).get()
             encounter = Encounter(**{**encounter_doc.to_dict(), "id": encounter_doc.id})
             await _determine_checks_and_maybe_resolve(updated_round, encounter, db, provider)
             return
@@ -696,7 +632,8 @@ async def round_submit(payload: RoundSubmitRequest, background_tasks: Background
 
     started_fresh = not round_doc.exists or round_doc.to_dict().get("status") == "resolved"
     if started_fresh:
-        round_ = _start_new_round(encounter, db)
+        prior_round_number = round_doc.to_dict().get("round_number", 0) if round_doc.exists else 0
+        round_ = _start_new_round(encounter, db, prior_round_number)
         actor_entries = [e for e in round_.entries if e.kind == "actor"]
         if actor_entries:
             background_tasks.add_task(
@@ -733,11 +670,10 @@ async def round_status(encounter_id: str):
         return RoundStatusResponse(encounter_id=encounter_id, round_number=0, status="idle", entries=[])
 
     round_ = PendingRound(**round_doc.to_dict())
-    entries_view = []
-    for e in round_.entries:
-        char_doc = db.collection("characters").document(e.character_id).get()
-        name = char_doc.to_dict().get("name", "Someone") if char_doc.exists else "Someone"
-        entries_view.append(RoundEntryView(character_id=e.character_id, character_name=name, kind=e.kind, status=e.status))
+    entries_view = [
+        RoundEntryView(character_id=e.character_id, character_name=e.character_name, kind=e.kind, status=e.status)
+        for e in round_.entries
+    ]
 
     return RoundStatusResponse(
         encounter_id=encounter_id,
@@ -814,6 +750,7 @@ async def resolve_check(payload: ResolveCheckRequest):
         .where("encounter_id", "==", check.encounter_id)
         .where("round_number", "==", check.round_number)
         .where("status", "==", "pending")
+        .limit(1)
         .stream()
     )
     if remaining:
@@ -848,7 +785,7 @@ def _build_opening_prompt(payload: OpeningSceneRequest, bible: dict, world_facts
 
     if world_facts:
         lines.append("World facts:")
-        for fact in world_facts[:6]:
+        for fact in world_facts[-6:]:  # facts are append-only oldest-first -- recent ones matter most
             lines.append(f"  - {fact}")
 
     if cards:
@@ -856,9 +793,14 @@ def _build_opening_prompt(payload: OpeningSceneRequest, bible: dict, world_facts
         for card in cards[:4]:
             lines.append(f"  [{card.label}]: {card.content}")
 
+    party_line = (
+        f"The player's character is: {payload.character_name}"
+        if payload.character_name else
+        "The DM is running this adventure directly -- no single player character to name; narrate for the party in general."
+    )
     lines += [
         "",
-        f"The player's character is: {payload.character_name}",
+        party_line,
         "",
         "Write 2-4 sentences that:",
         "- Place the character in a specific, vivid location",
@@ -887,7 +829,7 @@ def _build_round_prompt(entries_data: list[dict], bible: dict, world_facts: list
 
     if world_facts:
         lines.append("World state:")
-        for fact in world_facts[:4]:
+        for fact in world_facts[-4:]:  # facts are append-only oldest-first -- recent ones matter most
             lines.append(f"  - {fact}")
 
     if cards:
@@ -920,27 +862,69 @@ def _build_round_prompt(entries_data: list[dict], bible: dict, world_facts: list
     return "\n".join(lines)
 
 
-def _build_check_determination_prompt(entries_data: list[dict], attr_names: dict) -> str:
+def _build_round_and_checks_prompt(
+    entries_data: list[dict], bible: dict, world_facts: list[str], cards, attr_names: dict
+) -> str:
+    """
+    Combines check-determination and narration into one prompt: the model either flags
+    checks (leaving narrative null -- outcomes can't be narrated before an unrolled check)
+    or, if nothing needs a check, narrates the round directly in the same response.
+    """
+    currency = bible.get("currency_name", "Gold")
     skill_keys = list(DEFAULT_SKILL_NAMES.keys())
+
     lines = [
         "You are the Dungeon Master for a tabletop RPG. Multiple participants acted this round.",
-        "Decide which actions are risky, uncertain, or opposed enough to require a skill check.",
-        "Simple, safe, or clearly-successful actions do NOT need a check.",
         "",
-        "This round's actions:",
+        f"Currency: {currency}",
     ]
+    if attr_names:
+        renamed = [f"{k} → {v}" for k, v in attr_names.items() if v.lower() != k.lower()]
+        if renamed:
+            lines.append(f"Attributes: {', '.join(renamed)}")
+
+    if world_facts:
+        lines.append("World state:")
+        for fact in world_facts[-4:]:  # facts are append-only oldest-first -- recent ones matter most
+            lines.append(f"  - {fact}")
+
+    if cards:
+        lines.append("Context:")
+        for card in cards[:3]:
+            lines.append(f"  [{card.label}]: {card.content}")
+
+    lines += ["", "This round's actions:"]
     for e in entries_data:
-        lines.append(f"  - {e['name']} (character_id: {e['character_id']}): {e['text']}")
+        if e["passed"]:
+            lines.append(f"  - {e['name']} (character_id: {e['character_id']}): (passed their turn)")
+        else:
+            lines.append(f"  - {e['name']} (character_id: {e['character_id']}): {e['text']}")
 
     lines += [
         "",
         f"Available skills: {', '.join(skill_keys)}",
         "",
+        "STEP 1: Decide which actions (if any) are risky, uncertain, or opposed enough to require",
+        "a skill check. Simple, safe, or clearly-successful actions do NOT need one. A passed turn",
+        "never needs a check.",
+        "",
+        "STEP 2:",
+        "- If ANY action needs a check: fill in the checks array and set narrative to null.",
+        "  Do not narrate yet -- the outcome depends on a roll that hasn't happened.",
+        "- If NO action needs a check: leave checks empty, and instead write 2-4 sentences of DM",
+        "  narration describing what happens as a result of ALL these actions together, considering",
+        "  how they interact. Stay in the world, no meta-commentary, end on a moment of tension or",
+        "  discovery. If it fits the scene, up to 2 NPCs may speak and/or act in reaction -- keep this",
+        "  rare and purposeful. Each NPC's speech (their own words, in quotes) and action (what they",
+        "  physically do, narrated in your voice) are both optional.",
+        "",
         "Respond ONLY with valid JSON:",
-        '{"checks": [{"character_id": "...", "skill_key": "strength", "target": 12, "show_target": true}, ...]}',
-        "Use an empty list if nothing needs a check.",
+        '{"checks": [{"character_id": "...", "skill_key": "strength", "target": 12, "show_target": true}, ...], '
+        '"narrative": "...or null if any checks are listed", '
+        '"npcs": [{"name": "...", "speech": "...or null", "action": "...or null"}]}',
         "target is a difficulty number from 5 (easy) to 20 (very hard).",
         "show_target is whether the difficulty number should be revealed to the player before they roll.",
+        "Use an empty checks list if nothing needs a check, and an empty npcs list if none speak or act.",
     ]
     return "\n".join(lines)
 
@@ -976,7 +960,7 @@ def _build_ooc_prompt(
     if world_facts:
         lines.append("")
         lines.append("Recent adventure history:")
-        for fact in world_facts[:4]:
+        for fact in world_facts[-4:]:  # facts are append-only oldest-first -- recent ones matter most
             lines.append(f"  - {fact}")
 
     lines += [
@@ -985,48 +969,6 @@ def _build_ooc_prompt(
         "",
         "Respond conversationally in 1-3 sentences.",
         'Respond ONLY with valid JSON: {"response": "your reply here"}',
-    ]
-    return "\n".join(lines)
-
-
-def _build_actor_turn_prompt(last_player_action: str, actors_data: list[dict]) -> str:
-    lines = [
-        "You are controlling multiple AI party members in a tabletop RPG.",
-        "The player just took an action. Now each AI actor takes their turn.",
-        "Actors may react to each other — their responses happen simultaneously.",
-        "",
-        f"Player's last action: {last_player_action}",
-        "",
-        "Actors in the party:",
-    ]
-
-    for i, entry in enumerate(actors_data):
-        actor: Actor = entry["actor"]
-        char_name: str = entry["character_name"]
-        stance_label = _STANCE_LABELS.get(actor.stance, "Balanced")
-        tactics_label = _TACTICS_LABELS.get(actor.tactics, "Adaptive")
-        disposition_label = _DISPOSITION_LABELS.get(actor.disposition, "Pragmatic")
-
-        lines.append(f"\nActor {i + 1}: {char_name}")
-        lines.append(f"  Personality: {stance_label} stance, {tactics_label} tactics, {disposition_label} disposition")
-        if actor.description:
-            lines.append(f"  Description: {actor.description}")
-
-    lines += [
-        "",
-        "For EACH actor, provide a brief action and a 1-2 sentence narration.",
-        "Actors should feel distinct based on their personality axes.",
-        "They may comment on each other's actions if it makes sense.",
-        "",
-        "Respond ONLY with valid JSON:",
-        '{',
-        '  "actions": [',
-        '    {"action": "short action description", "narrative": "1-2 sentence narration"},',
-        '    ...',
-        '  ],',
-        '  "narrative": "optional combined DM narration tying all actions together"',
-        '}',
-        f"Return exactly {len(actors_data)} action entries in the same order as the actors listed above.",
     ]
     return "\n".join(lines)
 

@@ -38,6 +38,8 @@ class WorldMapGenerateRequest(BaseModel):
     num_land_biomes: int = 6        # Voronoi seeds for Arid/Grassland/Woodland/Tropical/Wetland/Arctic
     poi_density: float = 0.04       # fraction of all tiles flagged as poi_candidate
     allowed_land_families: list[int] | None = None  # BiomeFamily.value ints; None = all families
+    elevation_seed_positions: list[tuple[int, int]] | None = None  # manual placement; overrides num_elevation_seeds
+    land_biome_seed_positions: list[tuple[int, int]] | None = None  # manual placement; overrides num_land_biomes
 
     @field_validator("width", "height")
     @classmethod
@@ -57,6 +59,23 @@ class WorldMapGenerateRequest(BaseModel):
     def check_coverage(self) -> "WorldMapGenerateRequest":
         if self.percent_ocean + self.percent_mountain > 0.9:
             raise ValueError("percent_ocean + percent_mountain must be ≤ 0.9")
+
+        if self.elevation_seed_positions is not None:
+            if not (1 <= len(self.elevation_seed_positions) <= 3):
+                raise ValueError("elevation_seed_positions must contain 1 to 3 coordinates")
+            for x, y in self.elevation_seed_positions:
+                if not (0 <= x < self.width and 0 <= y < self.height):
+                    raise ValueError(f"elevation seed ({x}, {y}) is outside the map bounds")
+            self.num_elevation_seeds = len(self.elevation_seed_positions)
+
+        if self.land_biome_seed_positions is not None:
+            if not (1 <= len(self.land_biome_seed_positions) <= 12):
+                raise ValueError("land_biome_seed_positions must contain 1 to 12 coordinates")
+            for x, y in self.land_biome_seed_positions:
+                if not (0 <= x < self.width and 0 <= y < self.height):
+                    raise ValueError(f"land biome seed ({x}, {y}) is outside the map bounds")
+            self.num_land_biomes = len(self.land_biome_seed_positions)
+
         return self
 
 
@@ -358,14 +377,22 @@ def generate_world_map(request: WorldMapGenerateRequest) -> WorldMap:
     width, height = request.width, request.height
 
     # Steps 1–2: elevation seeds + elevation grid
-    elevation_seeds = _place_elevation_seeds(width, height, request.num_elevation_seeds, rng)
+    elevation_seeds = request.elevation_seed_positions or _place_elevation_seeds(
+        width, height, request.num_elevation_seeds, rng
+    )
     elev = _build_elevation_map(width, height, request.seed, elevation_seeds)
 
     # Step 3: sea level and mountain level by percentile
     flat_sorted = sorted(elev[y][x] for y in range(height) for x in range(width))
     n = len(flat_sorted)
-    sea_level = flat_sorted[max(0, int(request.percent_ocean * n) - 1)]
-    mountain_level = flat_sorted[min(n - 1, int((1.0 - request.percent_mountain) * n))]
+    if request.percent_ocean <= 0:
+        sea_level = -1.0       # elevation is normalized to [0,1] -- nothing can be <= -1.0
+    else:
+        sea_level = flat_sorted[max(0, int(request.percent_ocean * n) - 1)]
+    if request.percent_mountain <= 0:
+        mountain_level = 2.0   # nothing can be >= 2.0
+    else:
+        mountain_level = flat_sorted[min(n - 1, int((1.0 - request.percent_mountain) * n))]
 
     # Step 4: volcanic seed lottery
     seed_is_volcanic = {i: rng.random() < request.volcano_chance for i in range(len(elevation_seeds))}
@@ -377,8 +404,12 @@ def generate_world_map(request: WorldMapGenerateRequest) -> WorldMap:
         for x in range(width)
         if sea_level < elev[y][x] < mountain_level
     ]
-    num_seeds = min(request.num_land_biomes, len(land_positions))
-    raw_positions = rng.sample(land_positions, num_seeds) if land_positions else []
+    if request.land_biome_seed_positions:
+        raw_positions = request.land_biome_seed_positions
+        num_seeds = len(raw_positions)
+    else:
+        num_seeds = min(request.num_land_biomes, len(land_positions))
+        raw_positions = rng.sample(land_positions, num_seeds) if land_positions else []
     land_seed_pos: dict[int, tuple[int, int]] = dict(enumerate(raw_positions))
 
     active_families = (

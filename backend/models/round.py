@@ -9,6 +9,7 @@ RoundStatus = Literal["collecting", "awaiting_checks", "resolving", "resolved"]
 
 class RoundEntry(BaseModel):
     character_id: str
+    character_name: str = "Unknown"
     kind: ParticipantKind
     actor_id: str | None = None
     status: EntryStatus = "awaiting"

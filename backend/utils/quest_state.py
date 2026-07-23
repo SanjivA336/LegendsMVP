@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from ..models.quest import QuestStep, FAILURE_BUFFER
 from ..models.event import EventCondition
 from ..models.context import WorldState
-from ..models.character import Character
+from ..models.blueprint import Instance, CustomField, merge_fields, default_fields_for_kind
 from ..models.shared import new_id
 from .quest_prompts import build_next_step_prompt, build_recovery_steps_prompt
 from ..routers.context import get_cards_for_prompt
@@ -41,21 +41,30 @@ def _get_world_state(adventure_id: str, db) -> WorldState | None:
 
 
 def _create_character_stub(entity: dict, adventure_id: str, db) -> None:
-    """Create a minimal NPC character record for a quest-referenced entity."""
+    """Create a minimal NPC character (kind="character" Instance) for a quest-referenced
+    entity. Fields must be fully self-sufficient here (no template lookup happens when
+    a character is read back), so every required field gets a real value directly.
+    """
     raw_id = entity.get("suggested_id")
     # LLMs sometimes return suggested_id as an integer — always coerce to string
     suggested = str(raw_id).strip() if raw_id is not None else None
-    char = Character(
+    role = entity.get("role", "")
+    own_fields = [
+        CustomField(key="name", field_type="string", value=entity.get("name", "Unknown"), required=True),
+        CustomField(key="description", field_type="string", value=role),
+        CustomField(key="is_player", field_type="boolean", value=False, bound_behavior="is_player"),
+        CustomField(key="hp", field_type="number", value=10, required=True, bound_behavior="hp"),
+        CustomField(key="max_hp", field_type="number", value=10, required=True, bound_behavior="max_hp"),
+    ]
+    fields = merge_fields(default_fields_for_kind("character"), own_fields)
+    instance = Instance(
         id=suggested or new_id(),
         adventure_id=adventure_id,
-        name=entity.get("name", "Unknown"),
-        is_player=False,
-        hp=10,
-        max_hp=10,
-        description=entity.get("role", ""),
-        metadata={"role": entity.get("role", "")},
+        kind="character",
+        fields=fields,
+        metadata={"role": role},
     )
-    db.collection("characters").document(char.id).set(char.model_dump())
+    db.collection("instances").document(instance.id).set(instance.model_dump())
 
 
 def _parse_quest_step(data: dict, status: str = "pending") -> QuestStep:

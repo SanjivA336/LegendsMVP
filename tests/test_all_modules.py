@@ -56,87 +56,24 @@ def client(db, provider):
     fb_module._db = original_db
 
 
+@pytest.fixture()
+def auth_headers():
+    """Bypasses real Firebase ID-token verification, mirroring how `client`/`provider`
+    stub their own external dependencies -- adventures.py's routes all require auth."""
+    import firebase_admin.auth as fb_auth
+    with patch.object(fb_auth, "verify_id_token", return_value={"uid": "test-uid"}):
+        yield {"Authorization": "Bearer faketoken"}
+
+
 ADV = "adv-test-001"
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODULE 1: Items
-# ══════════════════════════════════════════════════════════════════════════════
-
-class TestItems:
-    def test_create_template(self, client):
-        r = client.post("/item-templates", json={
-            "adventure_id": ADV,
-            "name": "Iron Sword",
-            "item_type": "weapon",
-            "properties": {"damage": 5},
-        })
-        assert r.status_code == 201, r.text
-        data = r.json()
-        assert data["name"] == "Iron Sword"
-        assert data["properties"]["damage"] == 5
-        return data["id"]
-
-    def test_list_templates(self, client):
-        # Create two templates
-        for name in ["Axe", "Shield"]:
-            client.post("/item-templates", json={"adventure_id": ADV, "name": name, "item_type": "weapon"})
-        r = client.get(f"/item-templates?adventure_id={ADV}")
-        assert r.status_code == 200
-        assert len(r.json()) >= 2
-
-    def test_get_template_404(self, client):
-        r = client.get("/item-templates/nonexistent-id")
-        assert r.status_code == 404
-
-    def test_update_template(self, client):
-        r = client.post("/item-templates", json={"adventure_id": ADV, "name": "Dagger", "item_type": "weapon"})
-        tid = r.json()["id"]
-        r2 = client.patch(f"/item-templates/{tid}", json={"name": "Golden Dagger"})
-        assert r2.status_code == 200
-        assert r2.json()["name"] == "Golden Dagger"
-
-    def test_delete_template(self, client):
-        r = client.post("/item-templates", json={"adventure_id": ADV, "name": "Junk", "item_type": "misc"})
-        tid = r.json()["id"]
-        r2 = client.delete(f"/item-templates/{tid}")
-        assert r2.status_code == 204
-        assert client.get(f"/item-templates/{tid}").status_code == 404
-
-    def test_create_instance(self, client):
-        tmpl = client.post("/item-templates", json={
-            "adventure_id": ADV, "name": "Bow", "item_type": "weapon", "properties": {"damage": 3},
-        }).json()
-        r = client.post("/item-instances", json={
-            "adventure_id": ADV, "template_id": tmpl["id"], "overrides": {"damage": 4},
-        })
-        assert r.status_code == 201
-        data = r.json()
-        assert data["template_id"] == tmpl["id"]
-
-    def test_list_instances(self, client):
-        tmpl = client.post("/item-templates", json={"adventure_id": ADV, "name": "Tome", "item_type": "misc"}).json()
-        client.post("/item-instances", json={"adventure_id": ADV, "template_id": tmpl["id"]})
-        r = client.get(f"/item-instances?adventure_id={ADV}")
-        assert r.status_code == 200
-        assert len(r.json()) >= 1
-
-    def test_update_instance(self, client):
-        tmpl = client.post("/item-templates", json={"adventure_id": ADV, "name": "Staff", "item_type": "weapon"}).json()
-        inst = client.post("/item-instances", json={"adventure_id": ADV, "template_id": tmpl["id"]}).json()
-        r = client.patch(f"/item-instances/{inst['id']}", json={"overrides": {"enchanted": True}})
-        assert r.status_code == 200
-
-    def test_delete_instance(self, client):
-        tmpl = client.post("/item-templates", json={"adventure_id": ADV, "name": "Trash", "item_type": "misc"}).json()
-        inst = client.post("/item-instances", json={"adventure_id": ADV, "template_id": tmpl["id"]}).json()
-        r = client.delete(f"/item-instances/{inst['id']}")
-        assert r.status_code == 204
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MODULE 2: Characters
 # ══════════════════════════════════════════════════════════════════════════════
+# (Item template/instance coverage now lives in TestBlueprints/TestStatusEffects --
+# items were migrated onto the kind-tagged Template/Instance system; see Phase 2
+# of the blueprint migration plan.)
 
 _PLAYER_PAYLOAD = {
     "adventure_id": ADV,
@@ -210,6 +147,173 @@ class TestCharacters:
         })
         assert r.status_code == 200
         assert r.json()["ai_profile"]["intelligence"] == "alpha"
+
+    def test_seed_starter_content_creates_races_and_classes(self, client):
+        r = client.post("/templates/seed-starter-content", json={"adventure_id": ADV})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert len(data["race_template_ids"]) == 4
+        assert len(data["class_template_ids"]) == 4
+
+        races = client.get(f"/templates?adventure_id={ADV}&kind=race").json()
+        assert any(t["name"] == "Elf" for t in races)
+        elf = next(t for t in races if t["name"] == "Elf")
+        elf_dex = next(f for f in elf["fields"] if f["key"] == "dexterity")
+        assert elf_dex["value"] == 2
+        assert elf_dex["bound_behavior"] == "stat"
+
+    def test_create_character_with_race_and_class_attaches_instances(self, client):
+        seeded = client.post("/templates/seed-starter-content", json={"adventure_id": ADV}).json()
+        races = client.get(f"/templates?adventure_id={ADV}&kind=race").json()
+        classes = client.get(f"/templates?adventure_id={ADV}&kind=class").json()
+        elf_template = next(t for t in races if t["name"] == "Elf")
+        wizard_template = next(t for t in classes if t["name"] == "Wizard")
+
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "Elf Wizard",
+            "race_template_id": elf_template["id"], "class_template_id": wizard_template["id"],
+        })
+        assert r.status_code == 201, r.text
+        char = r.json()
+        assert char["race_instance_id"] is not None
+        assert char["class_instance_id"] is not None
+
+        # The attached race/class instance should resolve back to the chosen template's name
+        race_instance = client.get(f"/instances/{char['race_instance_id']}").json()
+        assert race_instance["name"] == "Elf"
+        class_instance = client.get(f"/instances/{char['class_instance_id']}").json()
+        assert class_instance["name"] == "Wizard"
+
+    def test_create_character_without_race_or_class_leaves_them_null(self, client):
+        r = client.post("/characters", json=_PLAYER_PAYLOAD)
+        assert r.status_code == 201, r.text
+        char = r.json()
+        assert char["race_instance_id"] is None
+        assert char["class_instance_id"] is None
+
+    def test_create_character_with_custom_fields(self, client):
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "Vex",
+            "custom_fields": [{"key": "backstory", "field_type": "string", "value": "A wandering exile"}],
+        })
+        assert r.status_code == 201, r.text
+        raw = client.get(f"/instances/{r.json()['id']}").json()
+        field_values = {f["key"]: f["value"] for f in raw["fields"]}
+        assert field_values["backstory"] == "A wandering exile"
+        # canonical fields still come from the dedicated payload args, not custom_fields
+        assert field_values["name"] == "Vex"
+
+    def test_custom_fields_cannot_clobber_canonical_fields(self, client):
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "Real Name",
+            "custom_fields": [{"key": "name", "field_type": "string", "value": "Spoofed Name"}],
+        })
+        assert r.status_code == 201, r.text
+        assert r.json()["name"] == "Real Name"
+
+    def test_wearable_template_gets_default_slot(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Leather Cap",
+        }).json()
+        field_values = {f["key"]: f["value"] for f in tmpl["fields"]}
+        assert field_values["slot"] == "body"
+
+    def test_wearable_instance_resolves_custom_slot(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Iron Helm",
+            "fields": [{"key": "slot", "field_type": "string", "value": "head"}],
+        }).json()
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "wearable", "template_id": tmpl["id"],
+        }).json()
+        resolved = client.get(f"/instances/{inst['id']}").json()
+        field_values = {f["key"]: f["value"] for f in resolved["fields"]}
+        assert field_values["slot"] == "head"
+
+    def _make_wearable_instance(self, client, slot="head"):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Test Helm",
+            "fields": [{"key": "slot", "field_type": "string", "value": slot}],
+        }).json()
+        return client.post("/instances", json={
+            "adventure_id": ADV, "kind": "wearable", "template_id": tmpl["id"],
+        }).json()
+
+    def test_create_character_claims_starting_gear_ownership(self, client):
+        helm = self._make_wearable_instance(client)
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "Geared Up",
+            "starting_inventory_ids": [helm["id"]],
+            "starting_equipped_wearable_ids": [helm["id"]],
+        })
+        assert r.status_code == 201, r.text
+        char = r.json()
+        assert char["inventory_ids"] == [helm["id"]]
+        assert char["equipped_wearable_ids"] == [helm["id"]]
+
+        claimed = client.get(f"/instances/{helm['id']}").json()
+        assert claimed["owner_id"] == char["id"]
+
+    def test_create_character_starting_item_already_owned_409(self, client):
+        helm = self._make_wearable_instance(client)
+        client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "First Claimer", "starting_inventory_ids": [helm["id"]],
+        })
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "Second Claimer", "starting_inventory_ids": [helm["id"]],
+        })
+        assert r.status_code == 409
+
+    def test_create_character_starting_item_not_found_404(self, client):
+        r = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "starting_inventory_ids": ["no-such-item"],
+        })
+        assert r.status_code == 404
+
+    def test_delete_character_releases_owned_items(self, client):
+        helm = self._make_wearable_instance(client)
+        char = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "starting_inventory_ids": [helm["id"]],
+        }).json()
+
+        r = client.delete(f"/characters/{char['id']}")
+        assert r.status_code == 204
+
+        released = client.get(f"/instances/{helm['id']}").json()
+        assert released["owner_id"] is None
+
+        # a second character can now claim the released item
+        r2 = client.post("/characters", json={
+            **_PLAYER_PAYLOAD, "name": "New Owner", "starting_inventory_ids": [helm["id"]],
+        })
+        assert r2.status_code == 201, r2.text
+
+    def test_attach_and_detach_status_effect(self, client):
+        cid = client.post("/characters", json=_PLAYER_PAYLOAD).json()["id"]
+        status = client.post("/status-effects", json={
+            "adventure_id": ADV, "name": "Poison I",
+            "effects": [{"effect_type": "hp_delta_over_time", "parameters": [{"key": "amount_per_turn", "value": -5}]}],
+        }).json()
+
+        r = client.post(f"/characters/{cid}/status-effects", json={"status_effect_id": status["id"], "expires_at_round": 12})
+        assert r.status_code == 200, r.text
+
+        raw = client.get(f"/instances/{cid}").json()
+        attached_ids = [a["ref_id"] for a in raw["attached"] if a["ref_kind"] == "status_effect"]
+        assert status["id"] in attached_ids
+        expiry = next(a["expires_at_round"] for a in raw["attached"] if a["ref_id"] == status["id"])
+        assert expiry == 12
+
+        r = client.delete(f"/characters/{cid}/status-effects/{status['id']}")
+        assert r.status_code == 200, r.text
+        raw_after = client.get(f"/instances/{cid}").json()
+        attached_ids_after = [a["ref_id"] for a in raw_after["attached"] if a["ref_kind"] == "status_effect"]
+        assert status["id"] not in attached_ids_after
+
+    def test_attach_status_effect_404_for_unknown_status(self, client):
+        cid = client.post("/characters", json=_PLAYER_PAYLOAD).json()["id"]
+        r = client.post(f"/characters/{cid}/status-effects", json={"status_effect_id": "nonexistent"})
+        assert r.status_code == 404
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -328,6 +432,66 @@ class TestWorldMap:
 
     def test_get_world_map_404(self, client):
         assert client.get("/world-maps/no-such-map").status_code == 404
+
+    def test_preview_world_map_does_not_persist(self, client):
+        r = client.post("/world-maps/preview", json={
+            "adventure_id": ADV, "width": 16, "height": 16, "seed": 55,
+        })
+        assert r.status_code == 200, r.text
+        preview_id = r.json()["id"]
+        # The preview must not show up in list results or be independently fetchable
+        # as if it were a real, persisted map.
+        listed_ids = [m["id"] for m in client.get(f"/world-maps?adventure_id={ADV}").json()]
+        assert preview_id not in listed_ids
+        assert client.get(f"/world-maps/{preview_id}").status_code == 404
+
+    def test_preview_then_commit_reproduces_same_tiles(self, client):
+        body = {"adventure_id": ADV, "width": 16, "height": 16, "seed": 123}
+        preview = client.post("/world-maps/preview", json=body).json()
+        committed = client.post("/world-maps", json=body).json()
+        assert preview["tiles"] == committed["tiles"]
+        assert preview["spawn_tile_x"] == committed["spawn_tile_x"]
+        assert preview["spawn_tile_y"] == committed["spawn_tile_y"]
+
+    def test_manual_elevation_seed_placement(self, client):
+        r = client.post("/world-maps/preview", json={
+            "adventure_id": ADV, "width": 32, "height": 32, "seed": 5,
+            "elevation_seed_positions": [[16, 16]],
+        })
+        assert r.status_code == 200, r.text
+        tiles = r.json()["tiles"]
+        by_pos = {(t["x"], t["y"]): t for t in tiles}
+        # A single elevation seed at the map center should produce mountainous
+        # terrain right at that coordinate.
+        assert by_pos[(16, 16)]["biome_id"] is not None
+        assert not by_pos[(16, 16)]["is_water"]
+
+    def test_manual_elevation_seed_out_of_bounds_rejected(self, client):
+        r = client.post("/world-maps/preview", json={
+            "adventure_id": ADV, "width": 16, "height": 16, "seed": 5,
+            "elevation_seed_positions": [[999, 999]],
+        })
+        assert r.status_code == 422
+
+    def test_percent_ocean_zero_produces_no_water(self, client):
+        r = client.post("/world-maps/preview", json={
+            "adventure_id": ADV, "width": 32, "height": 32, "seed": 9,
+            "percent_ocean": 0.0,
+        })
+        assert r.status_code == 200, r.text
+        assert not any(t["is_water"] for t in r.json()["tiles"])
+
+    def test_percent_mountain_zero_produces_no_mountain_or_volcanic(self, client):
+        r = client.post("/world-maps/preview", json={
+            "adventure_id": ADV, "width": 32, "height": 32, "seed": 9,
+            "percent_mountain": 0.0, "volcano_chance": 1.0,
+        })
+        assert r.status_code == 200, r.text
+        from backend.utils.biomes import BIOMES, BiomeFamily
+        for t in r.json()["tiles"]:
+            if t["biome_id"] is not None:
+                family = BIOMES.get_biome_by_id(t["biome_id"]).family
+                assert family not in (BiomeFamily.MOUNTAIN, BiomeFamily.VOLCANIC)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -725,6 +889,66 @@ class TestCombatFlow:
         assert len(result["action"]["dice_results"]) == 1
         assert result["narrative"] != ""
 
+    def test_equipped_weapon_damage_roll_is_used(self, client):
+        """_get_weapon_damage should roll the weapon's damage_roll (kind-tagged
+        Instance/Template) rather than falling back to the unarmed default. Uses a
+        1-sided die (always rolls 1) so the resulting damage is deterministic, and an
+        extreme stat gap so the to-hit roll always succeeds regardless of the d20.
+        """
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "weapon", "name": "Deterministic Blade",
+            "fields": [
+                {"key": "hit_roll", "field_type": "dice_roll", "value": "1d1"},
+                {"key": "damage_roll", "field_type": "dice_roll", "value": "1d1+5"},  # always rolls 6
+            ],
+        }).json()
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "weapon", "template_id": tmpl["id"],
+        }).json()
+
+        attacker = client.post("/characters", json={
+            "adventure_id": ADV, "name": "Deterministic Attacker", "is_player": True, "max_hp": 20,
+            # dexterity=100 vs target's 1: initiative is dexterity + d20 (1-20), so a 99-point
+            # gap can never be overcome by the die (max swing is 19) -- turn order is
+            # deterministic, not just overwhelmingly likely.
+            "stats": {"strength": 30, "dexterity": 100, "intelligence": 10, "fortitude": 10, "charisma": 10, "reflex": 10},
+            "inventory_ids": [inst["id"]],
+        }).json()
+        client.patch(f"/characters/{attacker['id']}/equip/{inst['id']}")
+
+        target = client.post("/characters", json={
+            "adventure_id": ADV, "name": "Deterministic Target", "is_player": False, "max_hp": 30,
+            "stats": {"strength": 10, "dexterity": 1, "intelligence": 10, "fortitude": 10, "charisma": 10, "reflex": 1},
+        }).json()
+
+        eid = client.post("/encounters", json={
+            "adventure_id": ADV, "stage_ids": [attacker["id"], target["id"]],
+        }).json()["id"]
+        client.post(f"/encounters/{eid}/start-combat", json={
+            "teams": {attacker["id"]: 1, target["id"]: 2}, "arena_width": 12, "arena_height": 12,
+        })
+        arena = client.get(f"/encounters/{eid}/arena").json()
+        assert arena["turn_order"][0] == attacker["id"], "attacker's dexterity gap should guarantee first turn"
+
+        # attacker's huge strength vs target's low reflex guarantees a hit regardless
+        # of the attack roll's own d20
+        r = client.post(f"/encounters/{eid}/player-turn", json={
+            "actor_id": attacker["id"], "action_type": "attack", "target_id": target["id"],
+            "stat_key": "strength", "dc_stat_key": "reflex",
+        })
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["action"]["outcome"] == "hit", result
+
+        # weapon_dmg=6 (1d1+5) + stat_bonus=(30-10)//2=10 = 16 total, minus up to 1 for
+        # cover -- unarmed fallback would only ever total 11 (1 + 10) at most, so hp
+        # dropping to <=16 conclusively shows the weapon's own roll was used. HP is only
+        # written back to the character document at end_combat (see
+        # test_hp_written_back_after_combat), so check the live arena state instead.
+        arena_after = client.get(f"/encounters/{eid}/arena").json()
+        target_combatant = next(c for c in arena_after["combatants"] if c["id"] == target["id"])
+        assert target_combatant["hp"] <= 16, target_combatant
+
     def test_player_end_turn(self, client):
         player, npc, eid = self._setup_encounter(client)
         client.post(f"/encounters/{eid}/start-combat", json={
@@ -794,8 +1018,10 @@ class TestCombatFlow:
         assert enc["status"] == "completed"
 
     def test_hp_written_back_after_combat(self, client):
-        """End combat should persist final HP to character documents."""
-        import backend.firebase as fb_module
+        """End combat should persist final HP to character documents (now kind="character"
+        Instances) -- checked through the real API contract rather than poking storage
+        directly, since characters no longer live in a dedicated "characters" collection.
+        """
         player, npc, eid = self._setup_encounter(client)
         client.post(f"/encounters/{eid}/start-combat", json={
             "teams": {player["id"]: 1, npc["id"]: 2}, "arena_width": 12, "arena_height": 12,
@@ -811,11 +1037,10 @@ class TestCombatFlow:
         client.post(f"/encounters/{eid}/end-combat", json={"outcome": "completed"})
 
         # HP should be written back for both combatants
-        p_doc = fb_module._db.collection("characters").document(player["id"]).get()
-        n_doc = fb_module._db.collection("characters").document(npc["id"]).get()
-        assert p_doc.exists
-        assert n_doc.exists
-        assert "hp" in p_doc.to_dict()
+        p_after = client.get(f"/characters/{player['id']}").json()
+        n_after = client.get(f"/characters/{npc['id']}").json()
+        assert "hp" in p_after
+        assert "hp" in n_after
 
     def test_list_actions(self, client):
         player, npc, eid = self._setup_encounter(client)
@@ -1043,3 +1268,348 @@ class TestCombatAI:
                       tiles=tiles, combatants=[], turn_order=[], teams={})
         # effective edge from (2,2) going east should be max(2, 0) = 2
         assert _effective_edge(arena, 2, 2, 1) == 2
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODULE 9: Blueprints & Instances (kind-tagged Template/Instance system)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestBlueprints:
+    def test_create_template(self, client):
+        r = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "weapon", "name": "Rusty Sword",
+            "fields": [
+                {"key": "hit_roll", "field_type": "dice_roll", "value": "1d20+2"},
+                {"key": "damage_roll", "field_type": "dice_roll", "value": "2d6+4"},
+            ],
+        })
+        assert r.status_code == 201, r.text
+        data = r.json()
+        assert data["name"] == "Rusty Sword"
+        field_values = {f["key"]: f["value"] for f in data["fields"]}
+        assert field_values["hit_roll"] == "1d20+2"
+        assert field_values["damage_roll"] == "2d6+4"
+
+    def test_create_template_missing_required_fields_400(self, client):
+        r = client.post("/templates", json={"adventure_id": ADV, "kind": "weapon", "name": "Bare Sword"})
+        assert r.status_code == 400
+        assert "hit_roll" in r.text and "damage_roll" in r.text
+
+    def test_create_template_custom_kind_needs_nothing(self, client):
+        r = client.post("/templates", json={"adventure_id": ADV, "kind": "custom", "name": "Anything"})
+        assert r.status_code == 201, r.text
+
+    def test_list_templates_filtered_by_kind(self, client):
+        client.post("/templates", json={"adventure_id": ADV, "kind": "race", "name": "Elf"})
+        client.post("/templates", json={"adventure_id": ADV, "kind": "class", "name": "Barbarian"})
+        r = client.get(f"/templates?adventure_id={ADV}&kind=race")
+        assert r.status_code == 200
+        assert all(t["kind"] == "race" for t in r.json())
+        assert any(t["name"] == "Elf" for t in r.json())
+
+    def test_get_template_404(self, client):
+        r = client.get("/templates/nonexistent-id")
+        assert r.status_code == 404
+
+    def test_get_template_default_fields(self, client):
+        r = client.get("/templates/default-fields?kind=weapon")
+        assert r.status_code == 200, r.text
+        keys = {f["key"] for f in r.json()}
+        assert {"hit_roll", "damage_roll", "weight"} <= keys
+
+    def test_update_template_merges_fields(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Leather Vest",
+            "fields": [{"key": "defense", "field_type": "number", "value": 2}],
+        }).json()
+        r = client.patch(f"/templates/{tmpl['id']}", json={
+            "fields": [{"key": "stat_delta", "field_type": "number", "value": 1}],
+        })
+        assert r.status_code == 200, r.text
+        field_values = {f["key"]: f["value"] for f in r.json()["fields"]}
+        # the pre-existing "defense" field should survive an update that only
+        # touches "stat_delta" -- fields merge, they don't replace wholesale
+        assert field_values["defense"] == 2
+        assert field_values["stat_delta"] == 1
+
+    def test_update_template_new_field_visible_on_existing_instance(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Cloak",
+            "fields": [{"key": "defense", "field_type": "number", "value": 1}],
+        }).json()
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "wearable", "template_id": tmpl["id"],
+        }).json()
+
+        client.patch(f"/templates/{tmpl['id']}", json={
+            "fields": [{"key": "weight", "field_type": "number", "value": 3}],
+        })
+
+        # existing instance was never touched, but resolving it should show the
+        # template's new field with its default value -- merge-at-read, not copy-on-write
+        resolved = client.get(f"/instances/{inst['id']}").json()
+        field_values = {f["key"]: f["value"] for f in resolved["fields"]}
+        assert field_values["weight"] == 3
+
+    def test_update_template_removed_field_clears_template_and_instance_override(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "wearable", "name": "Ring",
+            "fields": [
+                {"key": "defense", "field_type": "number", "value": 1},
+                {"key": "stat_key", "field_type": "string", "value": "charisma"},
+            ],
+        }).json()
+        # instance overrides "defense" itself -- the override must also be cleared
+        # when the template field is deleted, or it'd leak the deleted field back in
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "wearable", "template_id": tmpl["id"],
+            "fields": [{"key": "defense", "field_type": "number", "value": 5}],
+        }).json()
+
+        r = client.patch(f"/templates/{tmpl['id']}", json={"removed_field_keys": ["defense"]})
+        assert r.status_code == 200, r.text
+        assert "defense" not in {f["key"] for f in r.json()["fields"]}
+        assert "stat_key" in {f["key"] for f in r.json()["fields"]}
+
+        resolved = client.get(f"/instances/{inst['id']}").json()
+        assert "defense" not in {f["key"] for f in resolved["fields"]}
+
+    def test_delete_template(self, client):
+        tmpl = client.post("/templates", json={"adventure_id": ADV, "kind": "custom", "name": "Junk"}).json()
+        r = client.delete(f"/templates/{tmpl['id']}")
+        assert r.status_code == 204
+        assert client.get(f"/templates/{tmpl['id']}").status_code == 404
+
+    def test_delete_template_blocked_by_instance(self, client):
+        tmpl = client.post("/templates", json={"adventure_id": ADV, "kind": "race", "name": "Dwarf"}).json()
+        client.post("/instances", json={"adventure_id": ADV, "kind": "race", "template_id": tmpl["id"]})
+        r = client.delete(f"/templates/{tmpl['id']}")
+        assert r.status_code == 409
+
+    def test_create_instance_with_template(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "weapon", "name": "Bow",
+            "fields": [
+                {"key": "hit_roll", "field_type": "dice_roll", "value": "1d20"},
+                {"key": "damage_roll", "field_type": "dice_roll", "value": "1d8"},
+            ],
+        }).json()
+        r = client.post("/instances", json={"adventure_id": ADV, "kind": "weapon", "template_id": tmpl["id"]})
+        assert r.status_code == 201, r.text
+        assert r.json()["template_id"] == tmpl["id"]
+
+    def test_create_instance_kind_mismatch_400(self, client):
+        tmpl = client.post("/templates", json={"adventure_id": ADV, "kind": "race", "name": "Halfling"}).json()
+        r = client.post("/instances", json={"adventure_id": ADV, "kind": "class", "template_id": tmpl["id"]})
+        assert r.status_code == 400
+
+    def test_create_instance_missing_required_400(self, client):
+        r = client.post("/instances", json={"adventure_id": ADV, "kind": "weapon"})
+        assert r.status_code == 400
+
+    def test_create_instance_custom_kind_no_validation(self, client):
+        r = client.post("/instances", json={"adventure_id": ADV, "kind": "custom"})
+        assert r.status_code == 201, r.text
+
+    def test_get_instance_resolves_merged_fields_and_template_name(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "weapon", "name": "Rusty Sword",
+            "fields": [
+                {"key": "hit_roll", "field_type": "dice_roll", "value": "1d20"},
+                {"key": "damage_roll", "field_type": "dice_roll", "value": "1d6"},
+            ],
+        }).json()
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "weapon", "template_id": tmpl["id"],
+            "fields": [{"key": "damage_roll", "field_type": "dice_roll", "value": "2d6+4"}],
+        }).json()
+        r = client.get(f"/instances/{inst['id']}")
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["name"] == "Rusty Sword", "item-like kind: name comes from the template"
+        field_values = {f["key"]: f["value"] for f in data["fields"]}
+        assert field_values["hit_roll"] == "1d20", "un-overridden field falls through from template"
+        assert field_values["damage_roll"] == "2d6+4", "instance override wins over template default"
+
+    def test_character_instance_name_comes_from_fields_not_template(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "character", "name": "Default Character",
+            # "name" is a required CustomField for kind="character" just like the stats
+            # are -- it needs a value here the same way stats need theirs (which they
+            # already have, defaulted to 10, via KIND_FIELD_DEFS).
+            "fields": [{"key": "name", "field_type": "string", "value": "Unnamed", "required": True}],
+        }).json()
+        assert "id" in tmpl, tmpl
+        inst = client.post("/instances", json={
+            "adventure_id": ADV, "kind": "character", "template_id": tmpl["id"],
+            "fields": [{"key": "name", "field_type": "string", "value": "Kael", "required": True}],
+        }).json()
+        r = client.get(f"/instances/{inst['id']}")
+        assert r.status_code == 200, r.text
+        assert r.json()["name"] == "Kael"
+
+    def test_list_instances_by_kind(self, client):
+        tmpl = client.post("/templates", json={"adventure_id": ADV, "kind": "race", "name": "Gnome"}).json()
+        client.post("/instances", json={"adventure_id": ADV, "kind": "race", "template_id": tmpl["id"]})
+        r = client.get(f"/instances?adventure_id={ADV}&kind=race")
+        assert r.status_code == 200
+        assert all(i["kind"] == "race" for i in r.json())
+
+    def test_update_instance_fields_and_revalidate(self, client):
+        tmpl = client.post("/templates", json={
+            "adventure_id": ADV, "kind": "weapon", "name": "Axe",
+            "fields": [
+                {"key": "hit_roll", "field_type": "dice_roll", "value": "1d20"},
+                {"key": "damage_roll", "field_type": "dice_roll", "value": "1d8"},
+            ],
+        }).json()
+        inst = client.post("/instances", json={"adventure_id": ADV, "kind": "weapon", "template_id": tmpl["id"]}).json()
+        r = client.patch(f"/instances/{inst['id']}", json={
+            "fields": [{"key": "damage_roll", "field_type": "dice_roll", "value": "2d8+2"}],
+        })
+        assert r.status_code == 200, r.text
+        field_values = {f["key"]: f["value"] for f in r.json()["fields"]}
+        assert field_values["damage_roll"] == "2d8+2"
+
+    def test_delete_instance(self, client):
+        r = client.post("/instances", json={"adventure_id": ADV, "kind": "custom"})
+        inst = r.json()
+        r2 = client.delete(f"/instances/{inst['id']}")
+        assert r2.status_code == 204
+        assert client.get(f"/instances/{inst['id']}").status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODULE 10: Status Effects
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestStatusEffects:
+    def test_create_status_effect_def(self, client):
+        r = client.post("/status-effects", json={
+            "adventure_id": ADV, "name": "Poison I",
+            "effects": [
+                {"effect_type": "hp_delta_over_time", "parameters": [{"key": "amount_per_turn", "value": -5}]},
+            ],
+        })
+        assert r.status_code == 201, r.text
+        assert r.json()["name"] == "Poison I"
+
+    def test_create_status_effect_def_missing_param_400(self, client):
+        r = client.post("/status-effects", json={
+            "adventure_id": ADV, "name": "Broken Poison",
+            "effects": [{"effect_type": "hp_delta_over_time", "parameters": []}],
+        })
+        assert r.status_code == 400
+        assert "amount_per_turn" in r.text
+
+    def test_status_effect_def_with_multiple_effects(self, client):
+        r = client.post("/status-effects", json={
+            "adventure_id": ADV, "name": "Weakening Poison",
+            "effects": [
+                {"effect_type": "hp_delta_over_time", "parameters": [{"key": "amount_per_turn", "value": -3}]},
+                {"effect_type": "stat_delta", "parameters": [
+                    {"key": "stat_key", "value": "strength"}, {"key": "delta", "value": -1},
+                ]},
+            ],
+        })
+        assert r.status_code == 201, r.text
+        assert len(r.json()["effects"]) == 2
+
+    def test_list_status_effect_defs(self, client):
+        client.post("/status-effects", json={"adventure_id": ADV, "name": "Blessed", "effects": []})
+        r = client.get(f"/status-effects?adventure_id={ADV}")
+        assert r.status_code == 200
+        assert any(s["name"] == "Blessed" for s in r.json())
+
+    def test_get_status_effect_def_404(self, client):
+        r = client.get("/status-effects/nonexistent-id")
+        assert r.status_code == 404
+
+    def test_update_status_effect_def(self, client):
+        s = client.post("/status-effects", json={"adventure_id": ADV, "name": "Regen I", "effects": [
+            {"effect_type": "hp_delta_over_time", "parameters": [{"key": "amount_per_turn", "value": 5}]},
+        ]}).json()
+        r = client.patch(f"/status-effects/{s['id']}", json={"name": "Regeneration I"})
+        assert r.status_code == 200
+        assert r.json()["name"] == "Regeneration I"
+
+    def test_update_status_effect_def_rejects_invalid_effects(self, client):
+        s = client.post("/status-effects", json={"adventure_id": ADV, "name": "Regen II", "effects": [
+            {"effect_type": "hp_delta_over_time", "parameters": [{"key": "amount_per_turn", "value": 5}]},
+        ]}).json()
+        r = client.patch(f"/status-effects/{s['id']}", json={
+            "effects": [{"effect_type": "stat_delta", "parameters": []}],
+        })
+        assert r.status_code == 400
+
+    def test_delete_status_effect_def(self, client):
+        s = client.post("/status-effects", json={"adventure_id": ADV, "name": "Temp", "effects": []}).json()
+        r = client.delete(f"/status-effects/{s['id']}")
+        assert r.status_code == 204
+        assert client.get(f"/status-effects/{s['id']}").status_code == 404
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MODULE 10: World Creation Wizard v2 -- Phase 2 backend (adventure fields, theme)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class TestAdventures:
+    def test_create_adventure_with_client_invite_code(self, client, auth_headers):
+        r = client.post("/adventures", json={
+            "adventure_id": str(uuid.uuid4()), "name": "Test Campaign", "world_name": "Testonia",
+            "invite_code": "WIZARD1",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        assert r.json()["adventure"]["invite_code"] == "WIZARD1"
+
+    def test_create_adventure_falls_back_to_generated_invite_code(self, client, auth_headers):
+        r = client.post("/adventures", json={
+            "adventure_id": str(uuid.uuid4()), "name": "Test Campaign", "world_name": "Testonia",
+        }, headers=auth_headers)
+        assert r.status_code == 201, r.text
+        assert r.json()["adventure"]["invite_code"]   # non-empty, server-generated
+
+    def test_update_adventure_dm_mode_roundtrip(self, client, auth_headers):
+        created = client.post("/adventures", json={
+            "adventure_id": str(uuid.uuid4()), "name": "Test Campaign", "world_name": "Testonia",
+        }, headers=auth_headers).json()["adventure"]
+        assert created["dm_mode"] is None
+
+        r = client.patch(f"/adventures/{created['id']}", json={"dm_mode": "human"}, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["dm_mode"] == "human"
+
+    def test_update_adventure_world_map_id_roundtrip(self, client, auth_headers):
+        created = client.post("/adventures", json={
+            "adventure_id": str(uuid.uuid4()), "name": "Test Campaign", "world_name": "Testonia",
+        }, headers=auth_headers).json()["adventure"]
+        assert created["world_map_id"] is None
+
+        r = client.patch(f"/adventures/{created['id']}", json={"world_map_id": "map-1"}, headers=auth_headers)
+        assert r.status_code == 200, r.text
+        assert r.json()["world_map_id"] == "map-1"
+
+
+class TestNarratorOpeningScene:
+    def test_opening_scene_without_character_name(self, client):
+        r = client.post("/narrator/open", json={
+            "adventure_id": ADV, "world_name": "Testonia",
+        })
+        assert r.status_code == 200, r.text
+        assert r.json()["narrative"]
+
+
+class TestTheme:
+    def test_expand_theme(self, client):
+        r = client.post("/theme/expand", json={"pitch": "a rain-soaked cyberpunk megacity"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["world_name"]
+        assert data["currency_name"]
+        assert set(data["attribute_names"].keys()) == {
+            "strength", "dexterity", "intelligence", "fortitude", "charisma", "reflex",
+        }
+        assert set(data["biome_family_names"].keys()) == {
+            "arid", "grassland", "woodland", "tropical", "wetland",
+            "arctic", "ocean", "mountain", "volcanic",
+        }

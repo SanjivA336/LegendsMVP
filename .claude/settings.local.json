@@ -1,11 +1,79 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -m pytest tests/ -v)",
+      "Bash(python -m pytest tests/)",
+      "Bash(python -m pytest tests/test_all_modules.py -v -k \"equipped_weapon\" -rs)",
+      "Bash(python -m pytest tests/test_all_modules.py -k \"equipped_weapon\" -q)",
+      "Bash(npx tsc *)",
+      "Bash(python -c \"from backend.main import app; print\\('app imports OK'\\)\")",
+      "Bash(python -m pytest tests/test_all_modules.py -k \"TestBlueprints\" -v)",
+      "Bash(python -m pytest tests/test_all_modules.py -q)",
+      "Bash(python -m pytest tests/test_all_modules.py -k \"TestAdventures or TestNarratorOpeningScene or TestTheme\" -v)",
+      "Bash(python -m pytest tests/ -q)",
+      "Skill(run)",
+      "Skill(run:*)",
+      "Bash(curl -s -m 3 http://localhost:11434/api/tags)",
+      "Bash(curl -sv -m 3 http://localhost:11434/api/tags)",
+      "Bash(chromium-cli --help)",
+      "Bash(python -c \"import playwright; print\\('py playwright ok'\\)\")",
+      "Bash(python -m playwright --version)",
+      "Bash(npx --yes playwright --version)",
+      "Bash(npx --yes playwright install-deps chromium)",
+      "Bash(npx --yes playwright install chromium)",
+      "Bash(mkdir -p 'C:\\\\Users\\\\sanji\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\c--Users-sanji-Documents-Programming-LegendsMVP\\\\149233bb-9957-473b-b85e-1d3d07734972\\\\scratchpad/pw')",
+      "Bash(npm init *)",
+      "Bash(npm install *)",
+      "Bash(npx playwright *)",
+      "Bash(.venv/Scripts/python.exe -c \"import fastapi, uvicorn; print\\('ok'\\)\")",
+      "Bash(nohup .venv/Scripts/python.exe -m uvicorn backend.main:app --reload --port 8000)",
+      "Bash(echo \"started pid $!\")",
+      "Bash(nohup npm run dev)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:8000/docs)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(xargs grep -l \"Routes\\\\|createBrowserRouter\")",
+      "Bash(node wizard_run.js)",
+      "Bash(tail -30 \"C:\\\\Users\\\\sanji\\\\AppData\\\\Local\\\\Temp\\\\backend.log\")",
+      "Bash(tail -60 \"C:\\\\Users\\\\sanji\\\\AppData\\\\Local\\\\Temp\\\\backend.log\")",
+      "Bash(node cleanup_leftover.js)",
+      "Bash(tail -20 \"C:\\\\Users\\\\sanji\\\\AppData\\\\Local\\\\Temp\\\\backend.log\")",
+      "Bash(.venv/Scripts/python.exe -c ' *)",
+      "Bash(taskkill //F //IM node.exe //T)",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '\\\\''*uvicorn*backend.main*'\\\\'' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }')",
+      "Bash(curl -s -o /dev/null -w \"backend:%{http_code}\\\\n\" --max-time 3 http://localhost:8000/docs)",
+      "Bash(curl -s -o /dev/null -w \"frontend:%{http_code}\\\\n\" --max-time 3 http://localhost:5173/)",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '\\\\''*uvicorn*'\\\\'' -or $_.CommandLine -like '\\\\''*backend.main*'\\\\'' } | Select-Object ProcessId, CommandLine')",
+      "Bash(powershell -NoProfile -Command 'Get-CimInstance Win32_Process | Where-Object { $_.Name -like '\\\\''python*'\\\\'' } | Select-Object ProcessId, CommandLine')",
+      "Bash(powershell -NoProfile -Command \"Stop-Process -Id 13780 -Force -ErrorAction SilentlyContinue; Stop-Process -Id 25780 -Force -ErrorAction SilentlyContinue; Write-Output done\")",
+      "Bash(echo \"exit=$?\")",
+      "Bash(git status *)",
+      "Read(//c/Users/sanji/Documents/Programming/LegendsMVP/**)",
+      "Bash(xargs -I{} echo {})",
+      "Bash(git add *)"
+    ]
+  },
   "hooks": {
     "Notification": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "powershell.exe -Command \"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show('Claude needs attention','Claude Code')\""
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/sanji/Documents/Programming/LegendsMVP/.claude/hooks/notify-toast.ps1\" -Title \"Claude Code\" -DefaultMessage \"Claude needs your attention\"",
+            "timeout": 15,
+            "async": true
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:/Users/sanji/Documents/Programming/LegendsMVP/.claude/hooks/notify-toast.ps1\" -Title \"Claude Code\" -DefaultMessage \"Claude finished responding - waiting for your input\"",
+            "timeout": 15,
+            "async": true
           }
         ]
       }

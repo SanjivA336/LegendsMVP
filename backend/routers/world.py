@@ -33,6 +33,15 @@ async def create_world_map(payload: WorldMapGenerateRequest):
     return world_map
 
 
+@router.post("/world-maps/preview", response_model=WorldMap)
+async def preview_world_map(payload: WorldMapGenerateRequest):
+    """Generate a map without persisting it -- lets the wizard show a live preview and
+    regenerate freely before the user commits. Generation is a pure function of the
+    request body, so replaying the same body to POST /world-maps at commit time
+    reproduces this exact map."""
+    return generate_world_map(payload)
+
+
 @router.get("/world-maps", response_model=list[WorldMapMeta])
 async def list_world_maps(adventure_id: str):
     db = get_db()

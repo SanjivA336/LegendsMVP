@@ -26,7 +26,7 @@ export async function createWorldBible(payload: WorldBibleCreate): Promise<World
 
 export interface OpeningSceneRequest {
   adventure_id: string;
-  character_name: string;
+  character_name?: string | null;   // omitted for the "Be the DM" launch path
   world_name: string;
 }
 

@@ -2,8 +2,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .firebase import init_firestore
-from .routers import items, characters, context, world, pois, events, quests, combat, worldbible, narrator
+from .routers import characters, context, world, pois, events, quests, combat, worldbible, narrator
 from .routers import users, adventures, members, actors, dm_notes
+from .routers import entities, status_effects, theme
 
 
 @asynccontextmanager
@@ -24,7 +25,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(items.router)
 app.include_router(characters.router)
 app.include_router(context.router)
 app.include_router(world.router)
@@ -39,3 +39,6 @@ app.include_router(adventures.router)
 app.include_router(members.router)
 app.include_router(actors.router)
 app.include_router(dm_notes.router)
+app.include_router(entities.router)
+app.include_router(status_effects.router)
+app.include_router(theme.router)

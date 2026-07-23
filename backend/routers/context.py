@@ -1,3 +1,4 @@
+import time
 from fastapi import APIRouter, HTTPException
 from ..firebase import get_db
 from ..models.context import (
@@ -8,6 +9,19 @@ from ..models.context import (
 )
 
 router = APIRouter()
+
+# get_cards_for_prompt() is on the hot path of nearly every AI narration call
+# (opening scene, round resolution, every combat turn, quest advancement) but
+# context cards themselves only change on rare DM edits -- cache the full
+# per-adventure card list briefly instead of re-streaming the collection on
+# every single call. Cleared on any card write so edits still take effect
+# immediately rather than waiting out the TTL.
+_CARD_CACHE_TTL_SECONDS = 30
+_card_cache: dict[str, tuple[float, list[ContextCard]]] = {}
+
+
+def _invalidate_card_cache() -> None:
+    _card_cache.clear()
 
 WEIGHT_RANGES: dict[str, tuple[float, float]] = {
     "affinity": (-1.0, 1.0),
@@ -30,16 +44,26 @@ def _doc_to_edge(doc) -> RelationshipEdge:
     return RelationshipEdge(**(doc.to_dict() | {"id": doc.id}))
 
 
+def _all_cards_for_adventure(adventure_id: str, db) -> list[ContextCard]:
+    cached = _card_cache.get(adventure_id)
+    if cached and (time.monotonic() - cached[0]) < _CARD_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    cards = [
+        _doc_to_card(d)
+        for d in db.collection("context_cards").where("adventure_id", "==", adventure_id).stream()
+    ]
+    _card_cache[adventure_id] = (time.monotonic(), cards)
+    return cards
+
+
 def get_cards_for_prompt(
     adventure_id: str,
     event: str | None,
     recent_text: str,
     db,
 ) -> list[ContextCard]:
-    all_cards = [
-        _doc_to_card(d)
-        for d in db.collection("context_cards").where("adventure_id", "==", adventure_id).stream()
-    ]
+    all_cards = _all_cards_for_adventure(adventure_id, db)
 
     seen: dict[str, ContextCard] = {}
     for card in all_cards:
@@ -60,14 +84,14 @@ async def create_context_card(payload: ContextCardCreate):
     db = get_db()
     card = ContextCard(**payload.model_dump())
     db.collection("context_cards").document(card.id).set(card.model_dump())
+    _invalidate_card_cache()
     return card
 
 
 @router.get("/context-cards", response_model=list[ContextCard])
 async def list_context_cards(adventure_id: str):
     db = get_db()
-    docs = db.collection("context_cards").where("adventure_id", "==", adventure_id).stream()
-    return [_doc_to_card(d) for d in docs]
+    return _all_cards_for_adventure(adventure_id, db)
 
 
 @router.get("/context-cards/for-prompt", response_model=list[ContextCard])
@@ -97,6 +121,7 @@ async def update_context_card(card_id: str, updates: ContextCardUpdate):
         raise HTTPException(status_code=404, detail="Context card not found")
     changes = {k: v for k, v in updates.model_dump().items() if v is not None}
     ref.update(changes)
+    _invalidate_card_cache()
     return _doc_to_card(ref.get())
 
 
@@ -106,6 +131,7 @@ async def delete_context_card(card_id: str):
     if not db.collection("context_cards").document(card_id).get().exists:
         raise HTTPException(status_code=404, detail="Context card not found")
     db.collection("context_cards").document(card_id).delete()
+    _invalidate_card_cache()
 
 
 # ── WorldState Endpoints ───────────────────────────────────────────────────────

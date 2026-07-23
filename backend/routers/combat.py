@@ -8,7 +8,8 @@ from ..models.combat import (
     EndCombatRequest, TurnResult,
 )
 from ..models.event import FireEventRequest
-from ..models.character import Character
+from ..models.character import Character, character_from_instance, character_name_from_doc, write_character_field
+from ..models.blueprint import Instance, Template, CustomField, resolve_instance, get_field, parse_dice_notation
 from ..ai_provider import get_provider
 from ..utils.combat_ai import npc_decide_action, apply_alpha_phase, _effective_edge, _DIRS, _OPPOSITE
 from ..utils.combat_prompts import (
@@ -16,6 +17,7 @@ from ..utils.combat_prompts import (
 )
 from ..utils.event_dispatch import dispatch_event
 from ..utils.quest_state import _get_world_state
+from ..utils.minigames import dice
 from ..routers.context import get_cards_for_prompt
 
 router = APIRouter()
@@ -201,19 +203,28 @@ def _place_combatants(
 
 
 def _get_weapon_damage(weapon_id: str | None, db) -> int:
-    """Fetch the 'damage' property from the equipped weapon template. Returns 1 if none."""
+    """Roll the equipped weapon's damage_roll (a dice_roll CustomField, e.g. '2d6+4').
+    Returns 1 if there's no weapon, no instance, or no template (unarmed/orphaned).
+    """
     if not weapon_id:
         return 1
-    inst_doc = db.collection("item_instances").document(weapon_id).get()
+    inst_doc = db.collection("instances").document(weapon_id).get()
     if not inst_doc.exists:
         return 1
-    inst = inst_doc.to_dict()
-    tmpl_doc = db.collection("item_templates").document(inst.get("template_id", "")).get()
-    if not tmpl_doc.exists:
+    instance = Instance(**(inst_doc.to_dict() | {"id": inst_doc.id}))
+
+    template = None
+    if instance.template_id:
+        tmpl_doc = db.collection("templates").document(instance.template_id).get()
+        if tmpl_doc.exists:
+            template = Template(**(tmpl_doc.to_dict() | {"id": tmpl_doc.id}))
+
+    resolved = resolve_instance(instance, template)
+    damage_roll = get_field(resolved.fields, "damage_roll")
+    if not damage_roll:
         return 1
-    tmpl = tmpl_doc.to_dict()
-    props = {**tmpl.get("properties", {}), **inst.get("overrides", {})}
-    return int(props.get("damage", 1))
+    count, sides, bonus = parse_dice_notation(damage_roll)
+    return max(dice.roll_sum(count, sides, bonus), 0)
 
 
 def _save_arena(arena: Arena, db) -> None:
@@ -400,7 +411,7 @@ async def _resolve_action(
             raise HTTPException(400, "Must be adjacent to the cache to loot it")
         # Transfer items to actor's character inventory
         if cache.item_ids:
-            char_ref = db.collection("characters").document(actor.id)
+            char_ref = db.collection("instances").document(actor.id)
             char_doc = char_ref.get()
             if char_doc.exists:
                 current_inv = char_doc.to_dict().get("inventory_ids", [])
@@ -492,10 +503,10 @@ async def _run_turn(
     if action_type != "end_turn":
         target_name = None
         if result["target"]:
-            target_char = db.collection("characters").document(result["target"].id).get()
-            target_name = target_char.to_dict().get("name") if target_char.exists else result["target"].id
-        actor_char = db.collection("characters").document(actor_id).get()
-        actor_name = actor_char.to_dict().get("name") if actor_char.exists else actor_id
+            target_char = db.collection("instances").document(result["target"].id).get()
+            target_name = character_name_from_doc(target_char.to_dict(), result["target"].id) if target_char.exists else result["target"].id
+        actor_char = db.collection("instances").document(actor_id).get()
+        actor_name = character_name_from_doc(actor_char.to_dict(), actor_id) if actor_char.exists else actor_id
 
         cards = get_cards_for_prompt(encounter.adventure_id, None, "", db)
         world_state = _get_world_state(encounter.adventure_id, db)
@@ -518,9 +529,6 @@ async def _run_turn(
         description=result["outcome_summary"],
     )
     db.collection("actions").document(action.id).set(action.model_dump())
-    db.collection("encounters").document(encounter_id).update(
-        {"action_ids": encounter.action_ids + [action.id]}
-    )
 
     # Advance turn (after recording action)
     if action_type != "end_turn":
@@ -599,12 +607,14 @@ async def start_combat(encounter_id: str, payload: StartCombatRequest):
     # Fetch characters on the stage
     if not encounter.stage_ids:
         raise HTTPException(400, "No characters in stage_ids")
+    char_refs = [db.collection("instances").document(cid) for cid in encounter.stage_ids]
+    docs_by_id = {d.id: d for d in db.get_all(char_refs)}
     characters: list[Character] = []
     for char_id in encounter.stage_ids:
-        char_doc = db.collection("characters").document(char_id).get()
-        if not char_doc.exists:
+        char_doc = docs_by_id.get(char_id)
+        if char_doc is None or not char_doc.exists:
             raise HTTPException(404, f"Character {char_id} not found")
-        characters.append(Character(**(char_doc.to_dict() | {"id": char_doc.id})))
+        characters.append(character_from_instance(Instance(**(char_doc.to_dict() | {"id": char_doc.id}))))
 
     # Validate all staged characters are assigned a team
     for char in characters:
@@ -786,9 +796,11 @@ async def end_combat(encounter_id: str, payload: EndCombatRequest):
                 )
                 await dispatch_event(survived_payload, db, provider)
 
-        # Write final HP back to Character documents
+        # Write final HP back to character Instances -- hp lives inside the `fields`
+        # list now, not a top-level document field, so this is a read-modify-write
+        # rather than a plain .update({"hp": ...}).
         for c in arena.combatants:
-            db.collection("characters").document(c.id).update({"hp": c.hp})
+            write_character_field(c.id, CustomField(key="hp", field_type="number", value=c.hp, required=True, bound_behavior="hp"), db)
 
         # Discard arena from memory (encampment arenas stay in Firestore)
         if not arena.persisted:

@@ -75,3 +75,11 @@ def tier_label(raw_result: dict, target: float) -> str:
     if effective is None:
         effective = max(rolls) if rolls else 1
     return tier_label_for_roll(effective, target, die_size)
+
+
+def roll_sum(count: int, sides: int, bonus: int = 0) -> int:
+    """Roll `count` dice of `sides` sides, sum them, add a flat bonus. Used for weapon
+    damage/hit rolls (a plain rolled total) -- distinct from roll_and_score's skill-check
+    math (a -1..1 outcome against a target), since damage isn't a success/fail score.
+    """
+    return sum(random.randint(1, sides) for _ in range(count)) + bonus

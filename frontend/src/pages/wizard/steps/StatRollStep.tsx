@@ -2,11 +2,11 @@ import { useState } from 'react'
 import { DndContext } from '@dnd-kit/core'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import type { DragEndEvent } from '@dnd-kit/core'
-import type { WizardData } from '../AdventureWizard'
+import type { WizardData } from '../wizardData'
 
 interface Props {
   data: WizardData
-  onNext: (patch: Pick<WizardData, 'rolledStats' | 'statAssignments'>) => void
+  onNext: (patch: Partial<WizardData>) => void
   onBack: () => void
 }
 
@@ -192,7 +192,7 @@ export default function StatRollStep({ data, onNext, onBack }: Props) {
             <DroppableStat
               key={stat}
               stat={stat}
-              label={data.worldBible.attributeNames[stat] ?? stat}
+              label={data.attributeNames[stat] ?? stat}
               assignedValue={assignments[stat] ?? null}
               onClear={() => clearStat(stat)}
             />

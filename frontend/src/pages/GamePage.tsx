@@ -61,6 +61,7 @@ export default function GamePage() {
     if (roundStatus.status === 'resolved' && roundStatus.round_number > lastConsumedRound.current) {
       lastConsumedRound.current = roundStatus.round_number
       queryClient.invalidateQueries({ queryKey: ['action-log', activeEncounterId] })
+      queryClient.invalidateQueries({ queryKey: ['arena', activeEncounterId] })
       setPendingPlayerText(null)
       setPendingPassed(false)
     }
@@ -96,6 +97,10 @@ export default function GamePage() {
         setNarrativeEncounter(id, result.encounter_id)
       }
 
+      // round-status polling backs off when idle/resolved -- refresh it ourselves
+      // right away so submitting doesn't feel delayed by that backoff.
+      queryClient.invalidateQueries({ queryKey: ['round-status', result.encounter_id] })
+
       if (result.resolved) {
         lastConsumedRound.current = result.round_number
         await queryClient.invalidateQueries({ queryKey: ['action-log', result.encounter_id] })
@@ -128,6 +133,8 @@ export default function GamePage() {
         setNarrativeEncounter(id, result.encounter_id)
       }
 
+      queryClient.invalidateQueries({ queryKey: ['round-status', result.encounter_id] })
+
       if (result.resolved) {
         lastConsumedRound.current = result.round_number
         await queryClient.invalidateQueries({ queryKey: ['action-log', result.encounter_id] })
@@ -157,6 +164,7 @@ export default function GamePage() {
     try {
       const result = await forceResolveRound(activeEncounterId)
       lastConsumedRound.current = result.round_number
+      queryClient.invalidateQueries({ queryKey: ['round-status', activeEncounterId] })
       await queryClient.invalidateQueries({ queryKey: ['action-log', activeEncounterId] })
       setPendingPlayerText(null)
       setPendingPassed(false)

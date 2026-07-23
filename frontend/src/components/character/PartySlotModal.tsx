@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ActorPickerModal from './ActorPickerModal'
+import CharacterCreationModal from './CharacterCreationModal'
 
 interface Props {
   open: boolean
@@ -10,6 +11,7 @@ interface Props {
 
 export default function PartySlotModal({ open, adventureId, inviteCode, onClose }: Props) {
   const [actorPickerOpen, setActorPickerOpen] = useState(false)
+  const [characterCreationOpen, setCharacterCreationOpen] = useState(false)
   const [copied, setCopied] = useState(false)
 
   function copyCode() {
@@ -28,6 +30,19 @@ export default function PartySlotModal({ open, adventureId, inviteCode, onClose 
         adventureId={adventureId}
         onClose={() => {
           setActorPickerOpen(false)
+          onClose()
+        }}
+      />
+    )
+  }
+
+  if (characterCreationOpen) {
+    return (
+      <CharacterCreationModal
+        open
+        adventureId={adventureId}
+        onClose={() => {
+          setCharacterCreationOpen(false)
           onClose()
         }}
       />
@@ -76,6 +91,15 @@ export default function PartySlotModal({ open, adventureId, inviteCode, onClose 
           >
             <p className="text-sm font-semibold text-zinc-200">Add Actor</p>
             <p className="text-xs text-zinc-500 mt-0.5">Add an AI-controlled party member with a preset behavioral profile.</p>
+          </button>
+
+          {/* Create Character option */}
+          <button
+            onClick={() => setCharacterCreationOpen(true)}
+            className="rounded-xl border border-zinc-700 p-4 text-left hover:border-zinc-600 hover:bg-zinc-800/50 transition-colors"
+          >
+            <p className="text-sm font-semibold text-zinc-200">Create Character</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Build a full NPC with fields, gear, and inventory from scratch.</p>
           </button>
         </div>
       </div>

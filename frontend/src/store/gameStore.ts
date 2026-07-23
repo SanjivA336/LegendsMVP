@@ -98,6 +98,7 @@ export const useGameStore = create<GameStore>()(
           activeAdventureId: s.activeAdventureId === id ? null : s.activeAdventureId,
           activeCharacterId: s.activeAdventureId === id ? null : s.activeCharacterId,
           currentMapId: s.activeAdventureId === id ? null : s.currentMapId,
+          activeEncounterId: s.activeAdventureId === id ? null : s.activeEncounterId,
         })),
 
       updateAdventure: (id, patch) =>

@@ -8,6 +8,7 @@ interface ServerAdventureEntry {
     world_name: string
     world_map_id: string | null
     invite_code: string
+    dm_mode: 'ai' | 'human' | null
     created_at: string
   }
   member: {
@@ -53,10 +54,23 @@ export async function createAdventureRecord(payload: {
   name: string
   world_name: string
   world_map_id: string | null
+  invite_code?: string
 }): Promise<{ adventure: ServerAdventureEntry['adventure']; member: ServerAdventureEntry['member'] }> {
   const res = await authFetch(`${BASE}/adventures`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
+
+export async function updateAdventureRecord(
+  adventure_id: string,
+  patch: { name?: string; world_name?: string; world_map_id?: string; dm_mode?: 'ai' | 'human' }
+): Promise<ServerAdventureEntry['adventure']> {
+  const res = await authFetch(`${BASE}/adventures/${adventure_id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
   })
   if (!res.ok) throw new Error(await res.text())
   return res.json()

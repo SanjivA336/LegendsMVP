@@ -1,4 +1,5 @@
 import type { Character, CharacterInventory } from "../types/character";
+import type { CustomField } from "../types/blueprint";
 
 const BASE = "http://localhost:8000";
 
@@ -15,7 +16,16 @@ export async function getCharacter(id: string): Promise<Character> {
 }
 
 export async function createCharacter(
-  payload: Omit<Character, "id" | "hp" | "max_hp"> & { hp?: number; max_hp?: number }
+  payload: Omit<Character, "id" | "hp" | "max_hp" | "race_instance_id" | "class_instance_id" | "equipped_wearable_ids"> & {
+    hp?: number;
+    max_hp?: number;
+    race_template_id?: string | null;   // chosen from a kind="race" Template; the backend
+    class_template_id?: string | null;  // creates and attaches a fresh Instance of it
+    custom_fields?: CustomField[];             // values for a DM-authored character template's
+                                                // non-canonical fields (snapshotted in, not linked)
+    starting_inventory_ids?: string[];         // unowned Instance ids to claim
+    starting_equipped_wearable_ids?: string[]; // subset of the above -- what ends up worn
+  }
 ): Promise<Character> {
   const res = await fetch(`${BASE}/characters`, {
     method: "POST",

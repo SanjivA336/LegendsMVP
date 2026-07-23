@@ -2,7 +2,10 @@ import type { WorldMap, WorldMapMeta, BiomeGraph } from "../types/world";
 
 const BASE = "http://localhost:8000";
 
-export async function createWorldMap(payload: {
+// Mirrors backend/models/world.py::WorldMapGenerateRequest -- the wizard's WorldGenStep
+// sends this same body to /world-maps/preview on every "Regenerate" click, then sends
+// the exact last-used body to /world-maps at Launch to reproduce the previewed map tile-for-tile.
+export interface WorldMapGenerateRequest {
   adventure_id: string;
   seed: number;
   width?: number;
@@ -14,8 +17,22 @@ export async function createWorldMap(payload: {
   num_land_biomes?: number;
   poi_density?: number;
   allowed_land_families?: number[];
-}): Promise<WorldMap> {
+  elevation_seed_positions?: [number, number][] | null;
+  land_biome_seed_positions?: [number, number][] | null;
+}
+
+export async function createWorldMap(payload: WorldMapGenerateRequest): Promise<WorldMap> {
   const res = await fetch(`${BASE}/world-maps`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json() as Promise<WorldMap>;
+}
+
+export async function previewWorldMap(payload: WorldMapGenerateRequest): Promise<WorldMap> {
+  const res = await fetch(`${BASE}/world-maps/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

@@ -16,8 +16,9 @@ _ADVENTURE_COLLECTIONS = [
     "actions",
     "encounters",
     "quests",
-    "item_instances",
-    "characters",
+    "templates",
+    "instances",  # characters live here too now (kind="character")
+    "status_effect_defs",
     "context_cards",
     "world_state",
     "world_bible",
@@ -47,7 +48,7 @@ async def create_adventure(payload: AdventureCreate, request: Request):
         name=payload.name,
         world_name=payload.world_name,
         world_map_id=payload.world_map_id,
-        invite_code=secrets.token_urlsafe(6),
+        invite_code=payload.invite_code or secrets.token_urlsafe(6),
         created_at=datetime.now(timezone.utc).isoformat(),
     )
     db.collection("adventures").document(adventure.id).set(adventure.model_dump())
@@ -71,12 +72,15 @@ async def list_adventures(request: Request):
     member_docs = list(
         db.collection("members").where("user_uid", "==", uid).stream()
     )
+    members = [Member(**(m_doc.to_dict() | {"id": m_doc.id})) for m_doc in member_docs]
+
+    adv_refs = [db.collection("adventures").document(m.adventure_id) for m in members]
+    adv_by_id = {d.id: d for d in db.get_all(adv_refs)} if adv_refs else {}
+
     result = []
-    for m_doc in member_docs:
-        m_data = m_doc.to_dict() | {"id": m_doc.id}
-        member = Member(**m_data)
-        adv_doc = db.collection("adventures").document(member.adventure_id).get()
-        if not adv_doc.exists:
+    for member in members:
+        adv_doc = adv_by_id.get(member.adventure_id)
+        if adv_doc is None or not adv_doc.exists:
             continue
         adv = Adventure(**adv_doc.to_dict())
         result.append({"adventure": adv.model_dump(), "member": member.model_dump()})

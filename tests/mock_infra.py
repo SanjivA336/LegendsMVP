@@ -15,9 +15,11 @@ def _stub_firebase():
     fb = MagicMock()
     fb.credentials = MagicMock()
     fb.firestore = MagicMock()
+    fb.auth = MagicMock()
     sys.modules.setdefault("firebase_admin", fb)
     sys.modules.setdefault("firebase_admin.credentials", fb.credentials)
     sys.modules.setdefault("firebase_admin.firestore", fb.firestore)
+    sys.modules.setdefault("firebase_admin.auth", fb.auth)
 
 _stub_firebase()
 
@@ -125,6 +127,10 @@ class MockDB:
     def collection(self, name: str) -> _Col:
         return _Col(self._store, name)
 
+    def get_all(self, refs: list[_DocRef]) -> list[_Doc]:
+        """Simulates Firestore's batched multi-get (Client.get_all)."""
+        return [ref.get() for ref in refs]
+
     def dump(self) -> dict:
         """Debug helper — returns the full in-memory store."""
         return dict(self._store)
@@ -217,6 +223,19 @@ MOCK_RESPONSES = {
         "narrative": "A vast land stretches before you.",
         "updates": {"world_state_additions": []},
     },
+    "theme": {
+        "world_name": "Aethermoor",
+        "attribute_names": {
+            "strength": "Might", "dexterity": "Grace", "intelligence": "Wit",
+            "fortitude": "Vigor", "charisma": "Presence", "reflex": "Reflex",
+        },
+        "currency_name": "Sovereigns",
+        "biome_family_names": {
+            "arid": "Sunbaked Wastes", "grassland": "Windward Plains", "woodland": "Deep Timber",
+            "tropical": "Verdant Reach", "wetland": "Mire", "arctic": "Frostlands",
+            "ocean": "Sea", "mountain": "Highpeaks", "volcanic": "Ashfields",
+        },
+    },
     "default": {
         "narrative": "Something happens.",
         "updates": {"world_state_additions": []},
@@ -251,4 +270,6 @@ class MockAIProvider:
             return MOCK_RESPONSES["resolve_step"]
         if "poi" in p or "location" in p:
             return MOCK_RESPONSES["poi"]
+        if "biome_family_names" in p:
+            return MOCK_RESPONSES["theme"]
         return MOCK_RESPONSES[self._response_key]

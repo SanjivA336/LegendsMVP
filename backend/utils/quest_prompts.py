@@ -57,16 +57,22 @@ _STEP_COUNT_HINTS = {
 _EVENT_TYPE_LIST = "killed | acquired | delivered | reached | talked_to | survived"
 
 
+_MAX_CARDS_IN_PROMPT = 4
+_MAX_FACTS_IN_PROMPT = 4
+
+
 def _format_cards(cards: list["ContextCard"]) -> str:
     if not cards:
         return "(none)"
-    return "\n".join(f"[{c.label}]\n{c.content}" for c in cards)
+    return "\n".join(f"[{c.label}]\n{c.content}" for c in cards[:_MAX_CARDS_IN_PROMPT])
 
 
 def _format_world_state(world_state: "WorldState | None") -> str:
     if not world_state or not world_state.facts:
         return "(no facts recorded yet)"
-    return "\n".join(f"- {f}" for f in world_state.facts)
+    # facts are append-only (oldest first) -- the most recent ones are the relevant ones.
+    recent_facts = world_state.facts[-_MAX_FACTS_IN_PROMPT:]
+    return "\n".join(f"- {f}" for f in recent_facts)
 
 
 def _format_step(step: "QuestStep", label: str) -> str:
@@ -112,7 +118,6 @@ Respond with exactly this JSON:
 {{
   "narrative": "A short evocative paragraph introducing this quest to the party.",
   "updates": {{
-    "world_state_additions": [],
     "new_quest": {{
       "title": "...",
       "first_step": {{
@@ -177,7 +182,6 @@ Respond with exactly this JSON:
 {{
   "narrative": "A short paragraph describing what the party learns or is tasked with next.",
   "updates": {{
-    "world_state_additions": [],
     "new_quest_step": {{
       "description": "...",
       "completion_condition": "...",
@@ -220,7 +224,6 @@ Respond with exactly this JSON:
 {{
   "narrative": "One or two sentences narrating the outcome.",
   "updates": {{
-    "world_state_additions": [],
     "quest_step_complete": true,
     "narrative_on_complete": "Brief prose describing how this step was completed."
   }}
@@ -230,7 +233,6 @@ If the condition was NOT met, respond with:
 {{
   "narrative": "One sentence noting what still needs to happen.",
   "updates": {{
-    "world_state_additions": [],
     "quest_step_complete": false
   }}
 }}"""
@@ -279,7 +281,6 @@ Respond with exactly this JSON:
 {{
   "narrative": "A short paragraph describing how the party finds a new approach.",
   "updates": {{
-    "world_state_additions": [],
     "recovery_steps": [
       {{
         "description": "...",

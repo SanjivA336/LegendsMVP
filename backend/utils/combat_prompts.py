@@ -27,16 +27,25 @@ _DM_SYSTEM_BLOCK = (
 )
 
 
+# Combat narration is the highest-frequency AI call in the app (fires every non-end_turn
+# action, every turn, every combatant) -- cap what's injected instead of sending the
+# adventure's entire card/fact library on every single call.
+_MAX_CARDS_IN_PROMPT = 4
+_MAX_FACTS_IN_PROMPT = 4
+
+
 def _format_cards(cards: list["ContextCard"]) -> str:
     if not cards:
         return "(none)"
-    return "\n".join(f"[{c.label}]\n{c.content}" for c in cards)
+    return "\n".join(f"[{c.label}]\n{c.content}" for c in cards[:_MAX_CARDS_IN_PROMPT])
 
 
 def _format_world_state(world_state: "WorldState | None") -> str:
     if not world_state or not world_state.facts:
         return "(no facts recorded yet)"
-    return "\n".join(f"- {f}" for f in world_state.facts)
+    # facts are append-only (oldest first) -- the most recent ones are the relevant ones.
+    recent_facts = world_state.facts[-_MAX_FACTS_IN_PROMPT:]
+    return "\n".join(f"- {f}" for f in recent_facts)
 
 
 # ── Arena Generation Prompt ───────────────────────────────────────────────────

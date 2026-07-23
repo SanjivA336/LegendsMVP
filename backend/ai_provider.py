@@ -53,7 +53,7 @@ class AIProvider(ABC):
     add a new subclass and update get_provider() — callers never change.
 
     Every provider must return a dict matching the DM output contract:
-    { "narrative": str, "updates": { "world_state_additions": [...], "relationship_changes": {...}, "quest_step_complete": bool } }
+    { "narrative": str, "updates": { "relationship_changes": {...}, "quest_step_complete": bool } }
     """
 
     @abstractmethod
@@ -69,12 +69,19 @@ class OllamaProvider(AIProvider):
         self.model = model
 
     async def generate(self, prompt: str) -> dict:
-        # POST to Ollama's generate endpoint and request JSON-mode output
+        # POST to Ollama's generate endpoint and request JSON-mode output.
+        # Pinned explicitly (rather than relying on undocumented model defaults) so that
+        # now-capped prompt sizes get predictable context handling and output length.
         payload = {
             "model": self.model,
             "prompt": prompt,
             "stream": False,
             "format": "json",
+            "options": {
+                "temperature": 0.7,
+                "num_ctx": 4096,
+                "num_predict": 1024,
+            },
         }
 
         async with httpx.AsyncClient(timeout=60.0) as client:

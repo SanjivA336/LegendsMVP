@@ -1,12 +1,11 @@
 import { useState } from 'react'
-import type { WizardData } from '../AdventureWizard'
+import type { WizardData } from '../wizardData'
 import type { QuestLength } from '../../../types/quest'
 
 interface Props {
   data: WizardData
-  onNext: (patch: Pick<WizardData, 'questEnabled' | 'questLength' | 'questContextHint'>) => void
+  onNext: (patch: Partial<WizardData>) => void
   onBack: () => void
-  isSubmitting: boolean
 }
 
 const LENGTH_OPTIONS: { value: QuestLength; label: string; desc: string }[] = [
@@ -15,7 +14,7 @@ const LENGTH_OPTIONS: { value: QuestLength; label: string; desc: string }[] = [
   { value: 'long', label: 'Long', desc: '8+ steps — epic campaign' },
 ]
 
-export default function QuestSetupStep({ data, onNext, onBack, isSubmitting }: Props) {
+export default function QuestSetupStep({ data, onNext, onBack }: Props) {
   const [enabled, setEnabled] = useState(data.questEnabled)
   const [length, setLength] = useState<QuestLength>(data.questLength)
   const [hint, setHint] = useState(data.questContextHint)
@@ -89,10 +88,9 @@ export default function QuestSetupStep({ data, onNext, onBack, isSubmitting }: P
         </button>
         <button
           onClick={() => onNext({ questEnabled: enabled, questLength: length, questContextHint: hint })}
-          disabled={isSubmitting}
-          className="px-5 py-2 bg-accent hover:bg-accent-hover text-zinc-950 font-semibold rounded-xl transition-colors duration-150 disabled:opacity-60"
+          className="px-5 py-2 bg-accent hover:bg-accent-hover text-zinc-950 font-semibold rounded-xl transition-colors duration-150"
         >
-          {isSubmitting ? 'Creating...' : 'Launch Adventure'}
+          Next
         </button>
       </div>
     </div>

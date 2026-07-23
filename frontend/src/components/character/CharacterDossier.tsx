@@ -1,6 +1,7 @@
 import Modal from '../ui/Modal'
 import HPBar from '../ui/HPBar'
 import StatBlock from './StatBlock'
+import { useResolvedInstance } from '../../hooks/useEntities'
 import type { Character } from '../../types/character'
 
 interface CharacterDossierProps {
@@ -16,6 +17,11 @@ export default function CharacterDossier({
   onClose,
   accentColor,
 }: CharacterDossierProps) {
+  // Only resolved (fetches the instance's name) when the dossier is actually open and
+  // the character has one attached -- not on every party-list render.
+  const { data: race } = useResolvedInstance(open ? character?.race_instance_id ?? null : null)
+  const { data: characterClass } = useResolvedInstance(open ? character?.class_instance_id ?? null : null)
+
   if (!character) return null
 
   return (
@@ -46,6 +52,23 @@ export default function CharacterDossier({
 
         {character.description && (
           <p className="text-sm text-zinc-400 leading-relaxed">{character.description}</p>
+        )}
+
+        {(character.race_instance_id || character.class_instance_id) && (
+          <div className="flex gap-4 text-sm">
+            {character.race_instance_id && (
+              <div>
+                <span className="text-xs uppercase tracking-wider text-zinc-500">Race </span>
+                <span className="text-zinc-300">{race?.name ?? '…'}</span>
+              </div>
+            )}
+            {character.class_instance_id && (
+              <div>
+                <span className="text-xs uppercase tracking-wider text-zinc-500">Class </span>
+                <span className="text-zinc-300">{characterClass?.name ?? '…'}</span>
+              </div>
+            )}
+          </div>
         )}
 
         <div>

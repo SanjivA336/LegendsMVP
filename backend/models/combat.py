@@ -98,9 +98,9 @@ class Encounter(BaseDocument):
     mode: str = "combat"
     location_id: str | None = None
     stage_ids: list[str] = Field(default_factory=list)
-    action_ids: list[str] = Field(default_factory=list)
     status: EncounterStatus = "pending"
     arena_id: str | None = None           # set when arena is persisted (encampments only)
+    last_dm_narrative: str | None = None  # denormalized so actor auto-submit doesn't need to scan action history
 
 
 class EncounterUpdate(BaseModel):
